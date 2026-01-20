@@ -101,16 +101,19 @@ jobs:
           $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml down || true
           
           echo "✅ Starting services with latest images..."
-          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml up -d
+          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml up -d || true
           
-          echo "⏳ Waiting for services to start..."
-          sleep 10
+          echo "⏳ Waiting a moment for containers to start..."
+          sleep 5
           
           echo "📋 Checking container status..."
           docker ps -a --filter "name=convex" --format "table {{.Names}}\t{{.Status}}\t{{.ExitCode}}"
           
-          echo "📝 Backend logs (last 50 lines):"
-          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend --tail 50 || true
+          echo "📝 Backend logs (last 100 lines):"
+          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend --tail 100 2>&1 || docker logs convex-backend-backend-1 --tail 100 2>&1 || echo "Could not retrieve logs"
+          
+          echo "📝 Checking .env file (first few lines, masked):"
+          head -5 .env | sed 's/=.*/=***/' || true
           
           echo "⏳ Waiting for backend to be healthy..."
           sleep 10
@@ -121,9 +124,9 @@ jobs:
           else
             echo "⚠️  Backend health check failed!"
             echo "📝 Full backend logs:"
-            $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend
-            echo "📝 Environment check:"
-            echo "POSTGRES_URL is set: $([ -n "$POSTGRES_URL" ] && echo 'yes' || echo 'no')"
+            $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend 2>&1 || docker logs convex-backend-backend-1 2>&1 || true
+            echo "📝 Checking POSTGRES_URL:"
+            grep "POSTGRES_URL" .env | head -1 | sed 's/=.*/=***/' || echo "POSTGRES_URL not found in .env"
             exit 1
           fi
           
