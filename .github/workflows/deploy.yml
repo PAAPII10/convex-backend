@@ -34,9 +34,8 @@ jobs:
     - name: Encode CONVEX_ENV for safe transmission
       id: encode_env
       run: |
-        echo "CONVEX_ENV_B64<<EOF" >> $GITHUB_OUTPUT
-        echo "${{ env.CONVEX_ENV }}" | base64 -w 0 >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        ENCODED=$(echo -n "${{ env.CONVEX_ENV }}" | base64 | tr -d '\n')
+        echo "CONVEX_ENV_B64=$ENCODED" >> $GITHUB_OUTPUT
 
     - name: SSH into EC2 instance and deploy
       uses: appleboy/ssh-action@master
