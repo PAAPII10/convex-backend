@@ -69,87 +69,8 @@ jobs:
           echo "✅ .env file created (checking POSTGRES_URL is set)..."
           if grep -q "POSTGRES_URL" .env; then
             echo "✅ POSTGRES_URL found in .env"
-            # Show which port is being used (masked)
-            POSTGRES_URL_LINE=$(grep "^POSTGRES_URL=" .env | head -1)
-            if echo "$POSTGRES_URL_LINE" | grep -q ":6543"; then
-              echo "   Using connection pooler (port 6543)"
-            elif echo "$POSTGRES_URL_LINE" | grep -q ":5432"; then
-              echo "   Using direct connection (port 5432) - ensure IP is allowlisted in Supabase"
-            else
-              PORT=$(echo "$POSTGRES_URL_LINE" | sed 's/.*:\([0-9]*\).*/\1/' || echo "unknown")
-              echo "   Using port: $PORT"
-            fi
-            # Check if database name is included (should be removed for Convex)
-            if echo "$POSTGRES_URL_LINE" | grep -q "/postgres"; then
-              echo "   ⚠️  WARNING: Connection string contains '/postgres' - Convex will create its own database"
-              echo "   Consider removing '/postgres' from the end of POSTGRES_URL"
-            fi
           else
             echo "⚠️  WARNING: POSTGRES_URL not found in .env (will use SQLite if not set)"
-          fi
-          
-          # Configure IPv4 preference to avoid IPv6 connection issues
-          # This ensures DNS resolution prefers IPv4 addresses
-          echo "🔧 Configuring IPv4 preference for DNS resolution..."
-          if [ -f /etc/gai.conf ]; then
-            if ! grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf; then
-              echo "   Adding IPv4 preference to /etc/gai.conf..."
-              sudo sh -c 'echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf' 2>&1 || echo "   ⚠️  Could not modify /etc/gai.conf (may need sudo, continuing anyway)"
-            else
-              echo "   ✅ IPv4 preference already configured in /etc/gai.conf"
-            fi
-          else
-            echo "   Creating /etc/gai.conf to prefer IPv4..."
-            sudo sh -c 'echo "precedence ::ffff:0:0/96  100" > /etc/gai.conf' 2>&1 || echo "   ⚠️  Could not create /etc/gai.conf (may need sudo, continuing anyway)"
-          fi
-          
-          # Workaround: If POSTGRES_URL contains a hostname, try to resolve to IPv4 and use it
-          # This helps when DNS returns IPv6 but EC2 doesn't have IPv6 connectivity
-          if grep -q "POSTGRES_URL" .env; then
-            POSTGRES_URL=$(grep "^POSTGRES_URL=" .env | cut -d'=' -f2-)
-            if echo "$POSTGRES_URL" | grep -q "@.*:"; then
-              HOSTNAME=$(echo "$POSTGRES_URL" | sed 's/.*@\([^:]*\):.*/\1/')
-              PORT=$(echo "$POSTGRES_URL" | sed 's/.*:\([0-9]*\).*/\1/')
-              echo "   Resolving $HOSTNAME to IPv4 address..."
-              
-              # Try multiple methods to get IPv4 address
-              IPV4_ADDR=""
-              
-              # Method 1: dig (most reliable)
-              if command -v dig &> /dev/null; then
-                IPV4_ADDR=$(dig +short A "$HOSTNAME" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              fi
-              
-              # Method 2: host command
-              if [ -z "$IPV4_ADDR" ] && command -v host &> /dev/null; then
-                IPV4_ADDR=$(host -t A "$HOSTNAME" 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
-              fi
-              
-              # Method 3: getent (fallback)
-              if [ -z "$IPV4_ADDR" ]; then
-                IPV4_ADDR=$(getent ahostsv4 "$HOSTNAME" 2>/dev/null | grep "STREAM" | awk '{print $1}' | head -1)
-              fi
-              
-              # Method 4: nslookup (last resort)
-              if [ -z "$IPV4_ADDR" ]; then
-                IPV4_ADDR=$(nslookup "$HOSTNAME" 2>/dev/null | grep -A 1 "Name:" | grep "Address:" | awk '{print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              fi
-              
-              if [ -n "$IPV4_ADDR" ] && [[ "$IPV4_ADDR" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "   ✅ Found IPv4: $IPV4_ADDR"
-                echo "   Updating POSTGRES_URL to use IPv4 address (port $PORT)..."
-                NEW_POSTGRES_URL=$(echo "$POSTGRES_URL" | sed "s/@${HOSTNAME}:/@${IPV4_ADDR}:/")
-                sed -i "s|^POSTGRES_URL=.*|POSTGRES_URL=${NEW_POSTGRES_URL}|" .env
-                echo "   ✅ Updated POSTGRES_URL to use IPv4: ${NEW_POSTGRES_URL//:[^:]*@/:***@}"
-              else
-                echo "   ⚠️  Could not resolve $HOSTNAME to IPv4 address"
-                echo "   Trying alternative: Using hostname with IPv4-only DNS..."
-                # Try setting DNS to prefer IPv4
-                echo "   Note: If connection fails, you may need to:"
-                echo "   1. Enable IPv6 on your EC2 instance, OR"
-                echo "   2. Use direct connection (port 5432) with IP allowlisting in Supabase"
-              fi
-            fi
           fi
           
           # Ensure Docker is running
@@ -198,45 +119,11 @@ jobs:
           head -5 .env | sed 's/=.*/=***/' || true
           
           echo "🌐 Testing network connectivity to Supabase..."
-          POSTGRES_URL_LINE=$(grep "^POSTGRES_URL=" .env | head -1 || echo "")
-          if [ -n "$POSTGRES_URL_LINE" ]; then
-            POSTGRES_HOST=$(echo "$POSTGRES_URL_LINE" | sed 's/.*@\([^:]*\):.*/\1/')
-            POSTGRES_PORT=$(echo "$POSTGRES_URL_LINE" | sed 's/.*:\([0-9]*\).*/\1/')
-            echo "Testing connection to: $POSTGRES_HOST:$POSTGRES_PORT"
-            
-            # Check if it's an IP address or hostname
-            if [[ "$POSTGRES_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "   Using IP address directly: $POSTGRES_HOST"
-              echo "   Testing IPv4 connection:"
-              timeout 5 nc -4 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
-            else
-              echo "   Resolving hostname to IPv4..."
-              IPV4_ADDR=""
-              if command -v dig &> /dev/null; then
-                IPV4_ADDR=$(dig +short A "$POSTGRES_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              fi
-              if [ -z "$IPV4_ADDR" ] && command -v host &> /dev/null; then
-                IPV4_ADDR=$(host -t A "$POSTGRES_HOST" 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
-              fi
-              
-              if [ -n "$IPV4_ADDR" ]; then
-                echo "   ✅ Resolved to IPv4: $IPV4_ADDR"
-                echo "   Testing connection to $IPV4_ADDR:$POSTGRES_PORT:"
-                timeout 5 nc -4 -zv $IPV4_ADDR $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
-              else
-                echo "   ⚠️  Could not resolve to IPv4, testing hostname directly:"
-                timeout 5 nc -4 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
-                echo "   Testing IPv6 (may fail if EC2 doesn't have IPv6):"
-                timeout 5 nc -6 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ IPv6 port $POSTGRES_PORT is reachable" || echo "   ❌ IPv6 port $POSTGRES_PORT NOT reachable"
-              fi
-            fi
-            
-            # Also test the alternative port (5432 vs 6543)
-            if [ "$POSTGRES_PORT" = "6543" ]; then
-              echo "   💡 Tip: If port 6543 fails, try direct connection on port 5432 (requires IP allowlisting in Supabase)"
-            elif [ "$POSTGRES_PORT" = "5432" ]; then
-              echo "   💡 Tip: If port 5432 fails, ensure your EC2 IP is allowlisted in Supabase Dashboard → Settings → Database"
-            fi
+          POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
+          if [ -n "$POSTGRES_HOST" ]; then
+            echo "Testing connection to: $POSTGRES_HOST:6543"
+            timeout 5 bash -c "echo > /dev/tcp/$POSTGRES_HOST/6543" 2>&1 && echo "✅ Port 6543 is reachable" || echo "❌ Port 6543 is NOT reachable"
+            timeout 5 nc -zv $POSTGRES_HOST 6543 2>&1 || echo "nc test failed"
           fi
           
           echo "⏳ Waiting for backend to be healthy..."
