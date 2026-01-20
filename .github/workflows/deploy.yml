@@ -1,160 +1,94 @@
-name: Deploy Convex Self-Hosted Backend
+name: Deploy to EC2
 
 on:
   push:
-    branches: [ 'main' ]
-    paths:
-      - 'convex-backend/**'
-      - '.github/workflows/deploy.yml'
+    branches:
+      - main
+      - production
+  workflow_dispatch:
 
 env:
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  PRIVATE_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-  USERNAME: ${{ secrets.EC2_USERNAME }}
-  HOST_DNS: ${{ secrets.HOST_DNS }}
-  AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
-  CONVEX_ENV: ${{ secrets.CONVEX_ENV }}
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USER: ${{ secrets.EC2_USER }}
+  EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+  DEPLOY_PATH: /opt/convex
 
 jobs:
   deploy:
+    name: Deploy Convex Backend
     runs-on: ubuntu-latest
-
+    
     steps:
-    - name: Checkout Source
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
 
-    - name: SSH into EC2 instance and deploy
-      uses: appleboy/ssh-action@master
-      with:
-        host: ${{ env.HOST_DNS }}
-        username: ${{ env.USERNAME }}
-        key: ${{ env.PRIVATE_SSH_KEY }}
-        script: |
-          set -e
-          
-          echo "🚀 Starting Convex Backend Deployment..."
-          
-          # Navigate to convex-backend directory (create if doesn't exist)
-          mkdir -p ~/convex-backend
-          cd ~/convex-backend
-          
-          # Check if docker-compose.prod.yml exists, if not download official version
-          if [ ! -f docker-compose.prod.yml ]; then
-            echo "📦 Docker Compose file not found. Setting up files..."
-            if [ -d ".git" ]; then
-              echo "✅ Git repository found, files should be present"
-            else
-              echo "📥 Downloading official docker-compose.yml and adapting for production..."
-              curl -s https://raw.githubusercontent.com/get-convex/convex-backend/main/self-hosted/docker/docker-compose.yml -o docker-compose.prod.yml
-              # Modify for production: bind to localhost only
-              sed -i 's/- "${PORT:-3210}:3210"/- "127.0.0.1:3210:3210"/' docker-compose.prod.yml
-              sed -i 's/- "${SITE_PROXY_PORT:-3211}:3211"/- "127.0.0.1:3211:3211"/' docker-compose.prod.yml
-              sed -i 's/- "${DASHBOARD_PORT:-6791}:6791"/- "127.0.0.1:6791:6791"/' docker-compose.prod.yml
-              echo "✅ Created docker-compose.prod.yml from official source"
+      - name: Create deployment directory
+        run: |
+          ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST \
+            "sudo mkdir -p $DEPLOY_PATH && sudo chown -R $EC2_USER:$EC2_USER $DEPLOY_PATH"
+
+      - name: Copy files to EC2
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            docker-compose.yml \
+            $EC2_USER@$EC2_HOST:$DEPLOY_PATH/
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST << 'EOF'
+            set -e
+            cd $DEPLOY_PATH
+            
+            # Check if .env.production exists
+            if [ ! -f .env.production ]; then
+              echo "ERROR: .env.production not found!"
+              echo "Please create it manually or run: ./scripts/generate-env.sh"
+              exit 1
             fi
-          fi
-          
-          # Create or update .env file from GitHub secret
-          echo "📝 Configuring environment variables..."
-          printf '%s\n' "${{ env.CONVEX_ENV }}" > .env
-          
-          echo "✅ .env file created (checking POSTGRES_URL is set)..."
-          if grep -q "POSTGRES_URL" .env; then
-            echo "✅ POSTGRES_URL found in .env"
-          else
-            echo "⚠️  WARNING: POSTGRES_URL not found in .env (will use SQLite if not set)"
-          fi
-          
-          # Ensure Docker is running
-          sudo systemctl start docker || true
-          sudo chmod 666 /var/run/docker.sock || true
-          
-          # Detect docker-compose command
-          echo "🔍 Detecting Docker Compose command..."
-          DOCKER_COMPOSE_CMD=""
-          if command -v docker-compose &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker-compose"
-            echo "✅ Using docker-compose (standalone)"
-          elif docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"
-            echo "✅ Using docker compose (plugin)"
-          else
-            echo "❌ Docker Compose not found. Installing..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
-            DOCKER_COMPOSE_CMD="docker-compose"
-            echo "✅ Installed docker-compose"
-          fi
-          
-          echo "📥 Pulling latest Docker images..."
-          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml pull
-          
-          echo "🔄 Stopping existing services..."
-          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml down || true
-          
-          echo "✅ Starting services with latest images..."
-          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml up -d || true
-          
-          echo "⏳ Waiting a moment for containers to start..."
-          sleep 3
-          
-          echo "📋 Checking container status..."
-          docker ps -a --filter "name=convex" || true
-          
-          echo "📝 Backend logs (last 100 lines):"
-          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend --tail 100 2>&1 || docker logs convex-backend-backend-1 --tail 100 2>&1 || echo "Could not retrieve logs"
-          
-          echo "📝 Checking if backend container exists and its exit code:"
-          docker inspect convex-backend-backend-1 --format '{{.State.Status}} - Exit Code: {{.State.ExitCode}}' 2>&1 || echo "Container not found"
-          
-          echo "📝 Checking .env file (first few lines, masked):"
-          head -5 .env | sed 's/=.*/=***/' || true
-          
-          echo "🌐 Testing network connectivity to Supabase..."
-          POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
-          if [ -n "$POSTGRES_HOST" ]; then
-            echo "Testing connection to: $POSTGRES_HOST:6543"
-            timeout 5 bash -c "echo > /dev/tcp/$POSTGRES_HOST/6543" 2>&1 && echo "✅ Port 6543 is reachable" || echo "❌ Port 6543 is NOT reachable"
-            timeout 5 nc -zv $POSTGRES_HOST 6543 2>&1 || echo "nc test failed"
-          fi
-          
-          echo "⏳ Waiting for backend to be healthy..."
-          sleep 10
-          
-          echo "🏥 Checking backend health..."
-          if curl -f http://localhost:3210/version > /dev/null 2>&1; then
-            echo "✅ Backend is healthy!"
-          else
-            echo "⚠️  Backend health check failed!"
-            echo "📝 Full backend logs:"
-            $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend 2>&1 || docker logs convex-backend-backend-1 2>&1 || true
-            echo "📝 Checking POSTGRES_URL:"
-            grep "POSTGRES_URL" .env | head -1 | sed 's/=.*/=***/' || echo "POSTGRES_URL not found in .env"
-            echo "🌐 Network diagnostics:"
-            echo "Testing internet connectivity:"
-            curl -s --max-time 5 https://www.google.com > /dev/null && echo "✅ Internet connection works" || echo "❌ No internet connection"
-            echo "Testing DNS resolution:"
-            POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
-            if [ -n "$POSTGRES_HOST" ]; then
-              nslookup $POSTGRES_HOST 2>&1 | head -5 || echo "DNS lookup failed"
+            
+            # Pull latest images
+            docker compose pull
+            
+            # Stop existing containers
+            docker compose down || true
+            
+            # Start new containers
+            docker compose up -d
+            
+            # Wait for health check
+            echo "Waiting for services to be healthy..."
+            sleep 10
+            
+            # Check if backend is running
+            docker compose ps
+            
+            # Generate admin key if not exists
+            if [ ! -f .admin_key_generated ]; then
+              echo "Generating admin key..."
+              docker compose exec -T backend ./generate_admin_key.sh > admin_key.txt || true
+              touch .admin_key_generated
             fi
-            exit 1
-          fi
-          
-          echo "📊 Service Status:"
-          docker ps --filter "name=convex" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-          
-          echo ""
-          echo "📋 Docker Compose Version:"
-          $DOCKER_COMPOSE_CMD --version || $DOCKER_COMPOSE_CMD version
-          
-          echo ""
-          echo "✅ Deployment complete!"
+            
+            # Clean up old images
+            docker image prune -f
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key $EC2_USER@$EC2_HOST \
+            "cd $DEPLOY_PATH && docker compose ps && docker compose logs --tail=50 backend"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Deployed to: $EC2_HOST" >> $GITHUB_STEP_SUMMARY
+          echo "- Time: $(date)" >> $GITHUB_STEP_SUMMARY
