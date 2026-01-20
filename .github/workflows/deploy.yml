@@ -69,8 +69,19 @@ jobs:
           echo "✅ .env file created (checking POSTGRES_URL is set)..."
           if grep -q "POSTGRES_URL" .env; then
             echo "✅ POSTGRES_URL found in .env"
-            # Show which port is being used (masked)
+            # Get the current line
             POSTGRES_URL_LINE=$(grep "^POSTGRES_URL=" .env | head -1)
+            
+            # Remove quotes if present (quotes can break the connection string)
+            if echo "$POSTGRES_URL_LINE" | grep -q '^POSTGRES_URL="'; then
+              echo "   ⚠️  Removing quotes from POSTGRES_URL (quotes can cause connection issues)"
+              URL_VALUE=$(echo "$POSTGRES_URL_LINE" | cut -d'=' -f2- | sed 's/^"//' | sed 's/"$//')
+              sed -i "s|^POSTGRES_URL=.*|POSTGRES_URL=${URL_VALUE}|" .env
+              POSTGRES_URL_LINE="POSTGRES_URL=${URL_VALUE}"
+              echo "   ✅ Removed quotes from POSTGRES_URL"
+            fi
+            
+            # Show which port is being used (masked)
             if echo "$POSTGRES_URL_LINE" | grep -q ":6543"; then
               echo "   Using connection pooler (port 6543)"
             elif echo "$POSTGRES_URL_LINE" | grep -q ":5432"; then
@@ -79,6 +90,7 @@ jobs:
               PORT=$(echo "$POSTGRES_URL_LINE" | sed 's/.*:\([0-9]*\).*/\1/' || echo "unknown")
               echo "   Using port: $PORT"
             fi
+            
             # Check if database name is included (should be removed for Convex)
             if echo "$POSTGRES_URL_LINE" | grep -q "/postgres"; then
               echo "   ⚠️  WARNING: Connection string contains '/postgres' - removing it (Convex creates its own database)"
@@ -93,6 +105,15 @@ jobs:
             fi
           else
             echo "⚠️  WARNING: POSTGRES_URL not found in .env (will use SQLite if not set)"
+          fi
+          
+          # Check for localhost origins (won't work on EC2)
+          if grep -q "CONVEX_CLOUD_ORIGIN=http://localhost" .env || grep -q "CONVEX_SITE_ORIGIN=http://localhost" .env; then
+            echo "⚠️  WARNING: Found localhost origins in .env"
+            echo "   For EC2 deployment, update these to your domain/IP:"
+            echo "   CONVEX_CLOUD_ORIGIN=http://your-domain.com (or http://103.137.408.49:3210)"
+            echo "   CONVEX_SITE_ORIGIN=http://your-domain.com (or http://103.137.408.49:3211)"
+            echo "   Note: Using IP addresses is fine for initial testing, but use a domain with HTTPS for production"
           fi
           
           # Configure IPv4 preference to avoid IPv6 connection issues
