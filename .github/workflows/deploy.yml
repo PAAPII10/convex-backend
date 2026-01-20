@@ -73,6 +73,42 @@ jobs:
             echo "⚠️  WARNING: POSTGRES_URL not found in .env (will use SQLite if not set)"
           fi
           
+          # Configure IPv4 preference to avoid IPv6 connection issues
+          # This ensures DNS resolution prefers IPv4 addresses
+          echo "🔧 Configuring IPv4 preference for DNS resolution..."
+          if [ -f /etc/gai.conf ]; then
+            if ! grep -q "^precedence ::ffff:0:0/96  100" /etc/gai.conf; then
+              echo "   Adding IPv4 preference to /etc/gai.conf..."
+              sudo sh -c 'echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf' 2>&1 || echo "   ⚠️  Could not modify /etc/gai.conf (may need sudo, continuing anyway)"
+            else
+              echo "   ✅ IPv4 preference already configured in /etc/gai.conf"
+            fi
+          else
+            echo "   Creating /etc/gai.conf to prefer IPv4..."
+            sudo sh -c 'echo "precedence ::ffff:0:0/96  100" > /etc/gai.conf' 2>&1 || echo "   ⚠️  Could not create /etc/gai.conf (may need sudo, continuing anyway)"
+          fi
+          
+          # Workaround: If POSTGRES_URL contains a hostname, try to resolve to IPv4 and use it
+          # This helps when DNS returns IPv6 but EC2 doesn't have IPv6 connectivity
+          if grep -q "POSTGRES_URL" .env; then
+            POSTGRES_URL=$(grep "^POSTGRES_URL=" .env | cut -d'=' -f2-)
+            if echo "$POSTGRES_URL" | grep -q "@.*:"; then
+              HOSTNAME=$(echo "$POSTGRES_URL" | sed 's/.*@\([^:]*\):.*/\1/')
+              PORT=$(echo "$POSTGRES_URL" | sed 's/.*:\([0-9]*\).*/\1/')
+              echo "   Resolving $HOSTNAME to IPv4 address..."
+              IPV4_ADDR=$(getent ahostsv4 "$HOSTNAME" 2>/dev/null | head -1 | awk '{print $1}' || echo "")
+              if [ -n "$IPV4_ADDR" ] && [ "$IPV4_ADDR" != "$HOSTNAME" ]; then
+                echo "   ✅ Found IPv4: $IPV4_ADDR"
+                echo "   Updating POSTGRES_URL to use IPv4 address..."
+                NEW_POSTGRES_URL=$(echo "$POSTGRES_URL" | sed "s/@${HOSTNAME}:/@${IPV4_ADDR}:/")
+                sed -i "s|^POSTGRES_URL=.*|POSTGRES_URL=${NEW_POSTGRES_URL}|" .env
+                echo "   ✅ Updated POSTGRES_URL to use IPv4"
+              else
+                echo "   ⚠️  Could not resolve to IPv4, will use hostname (may fail if IPv6 is not available)"
+              fi
+            fi
+          fi
+          
           # Ensure Docker is running
           sudo systemctl start docker || true
           sudo chmod 666 /var/run/docker.sock || true
@@ -122,8 +158,11 @@ jobs:
           POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
           if [ -n "$POSTGRES_HOST" ]; then
             echo "Testing connection to: $POSTGRES_HOST:6543"
-            timeout 5 bash -c "echo > /dev/tcp/$POSTGRES_HOST/6543" 2>&1 && echo "✅ Port 6543 is reachable" || echo "❌ Port 6543 is NOT reachable"
-            timeout 5 nc -zv $POSTGRES_HOST 6543 2>&1 || echo "nc test failed"
+            echo "IPv4 test:"
+            timeout 5 nc -4 -zv $POSTGRES_HOST 6543 2>&1 && echo "✅ IPv4 port 6543 is reachable" || echo "❌ IPv4 port 6543 NOT reachable"
+            echo "IPv6 test:"
+            timeout 5 nc -6 -zv $POSTGRES_HOST 6543 2>&1 && echo "✅ IPv6 port 6543 is reachable" || echo "❌ IPv6 port 6543 NOT reachable (this is OK if EC2 doesn't have IPv6)"
+            echo "Note: If IPv4 works but backend still fails, Docker may be using IPv6. Check Docker network settings."
           fi
           
           echo "⏳ Waiting for backend to be healthy..."
