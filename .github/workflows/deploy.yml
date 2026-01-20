@@ -64,9 +64,14 @@ jobs:
           
           # Create or update .env file from GitHub secret
           echo "📝 Configuring environment variables..."
-          cat << 'ENV_EOF' > .env
-          ${{ env.CONVEX_ENV }}
-          ENV_EOF
+          printf '%s\n' "${{ env.CONVEX_ENV }}" > .env
+          
+          echo "✅ .env file created (checking POSTGRES_URL is set)..."
+          if grep -q "POSTGRES_URL" .env; then
+            echo "✅ POSTGRES_URL found in .env"
+          else
+            echo "⚠️  WARNING: POSTGRES_URL not found in .env (will use SQLite if not set)"
+          fi
           
           # Ensure Docker is running
           sudo systemctl start docker || true
@@ -98,14 +103,27 @@ jobs:
           echo "✅ Starting services with latest images..."
           $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml up -d
           
-          echo "⏳ Waiting for services to be healthy..."
-          sleep 15
+          echo "⏳ Waiting for services to start..."
+          sleep 10
+          
+          echo "📋 Checking container status..."
+          docker ps -a --filter "name=convex" --format "table {{.Names}}\t{{.Status}}\t{{.ExitCode}}"
+          
+          echo "📝 Backend logs (last 50 lines):"
+          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend --tail 50 || true
+          
+          echo "⏳ Waiting for backend to be healthy..."
+          sleep 10
           
           echo "🏥 Checking backend health..."
           if curl -f http://localhost:3210/version > /dev/null 2>&1; then
             echo "✅ Backend is healthy!"
           else
-            echo "⚠️  Backend health check failed. Check logs with: $DOCKER_COMPOSE_CMD logs"
+            echo "⚠️  Backend health check failed!"
+            echo "📝 Full backend logs:"
+            $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend
+            echo "📝 Environment check:"
+            echo "POSTGRES_URL is set: $([ -n "$POSTGRES_URL" ] && echo 'yes' || echo 'no')"
             exit 1
           fi
           
