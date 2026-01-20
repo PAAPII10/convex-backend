@@ -104,13 +104,16 @@ jobs:
           $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml up -d || true
           
           echo "⏳ Waiting a moment for containers to start..."
-          sleep 5
+          sleep 3
           
           echo "📋 Checking container status..."
-          docker ps -a --filter "name=convex" --format "table {{.Names}}\t{{.Status}}\t{{.ExitCode}}"
+          docker ps -a --filter "name=convex" || true
           
           echo "📝 Backend logs (last 100 lines):"
           $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend --tail 100 2>&1 || docker logs convex-backend-backend-1 --tail 100 2>&1 || echo "Could not retrieve logs"
+          
+          echo "📝 Checking if backend container exists and its exit code:"
+          docker inspect convex-backend-backend-1 --format '{{.State.Status}} - Exit Code: {{.State.ExitCode}}' 2>&1 || echo "Container not found"
           
           echo "📝 Checking .env file (first few lines, masked):"
           head -5 .env | sed 's/=.*/=***/' || true
