@@ -82,10 +82,14 @@ jobs:
             # Check if database name is included (should be removed for Convex)
             if echo "$POSTGRES_URL_LINE" | grep -q "/postgres"; then
               echo "   ⚠️  WARNING: Connection string contains '/postgres' - removing it (Convex creates its own database)"
-              # Remove /postgres and any trailing path from the connection string
-              FIXED_URL=$(echo "$POSTGRES_URL_LINE" | sed 's|/postgres.*||' | sed 's|/$||')
-              sed -i "s|^POSTGRES_URL=.*|${FIXED_URL}|" .env
+              # Extract the URL value and remove /postgres, then reconstruct the line
+              URL_VALUE=$(echo "$POSTGRES_URL_LINE" | cut -d'=' -f2-)
+              # Remove /postgres and anything after it, but keep the port number
+              FIXED_URL_VALUE=$(echo "$URL_VALUE" | sed 's|/postgres.*||' | sed 's|/$||')
+              # Update the .env file with the fixed value
+              sed -i "s|^POSTGRES_URL=.*|POSTGRES_URL=${FIXED_URL_VALUE}|" .env
               echo "   ✅ Removed '/postgres' from POSTGRES_URL"
+              echo "   📝 Updated POSTGRES_URL format (port preserved)"
             fi
           else
             echo "⚠️  WARNING: POSTGRES_URL not found in .env (will use SQLite if not set)"
@@ -236,49 +240,68 @@ jobs:
           echo "🌐 Testing network connectivity to Supabase..."
           POSTGRES_URL_LINE=$(grep "^POSTGRES_URL=" .env | head -1 || echo "")
           if [ -n "$POSTGRES_URL_LINE" ]; then
-            POSTGRES_HOST=$(echo "$POSTGRES_URL_LINE" | sed 's/.*@\([^:]*\):.*/\1/')
-            POSTGRES_PORT=$(echo "$POSTGRES_URL_LINE" | sed 's/.*:\([0-9]*\).*/\1/')
-            echo "Testing connection to: $POSTGRES_HOST:$POSTGRES_PORT"
+            # Extract the URL value (everything after POSTGRES_URL=)
+            POSTGRES_URL_VALUE=$(echo "$POSTGRES_URL_LINE" | cut -d'=' -f2-)
             
-            # Check if it's an IP address or hostname
-            if [[ "$POSTGRES_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "   Using IP address directly: $POSTGRES_HOST"
-              echo "   Testing IPv4 connection:"
-              timeout 5 nc -4 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
-            else
-              echo "   Resolving hostname to IPv4..."
-              IPV4_ADDR=""
-              # Try external DNS resolvers first (more reliable for IPv4)
-              if command -v dig &> /dev/null; then
-                IPV4_ADDR=$(dig @8.8.8.8 +short A "$POSTGRES_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              fi
-              if [ -z "$IPV4_ADDR" ] && command -v dig &> /dev/null; then
-                IPV4_ADDR=$(dig @1.1.1.1 +short A "$POSTGRES_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              fi
-              if [ -z "$IPV4_ADDR" ] && command -v dig &> /dev/null; then
-                IPV4_ADDR=$(dig +short A "$POSTGRES_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              fi
-              if [ -z "$IPV4_ADDR" ] && command -v host &> /dev/null; then
-                IPV4_ADDR=$(host -t A "$POSTGRES_HOST" 8.8.8.8 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
-              fi
-              
-              if [ -n "$IPV4_ADDR" ]; then
-                echo "   ✅ Resolved to IPv4: $IPV4_ADDR"
-                echo "   Testing connection to $IPV4_ADDR:$POSTGRES_PORT:"
-                timeout 5 nc -4 -zv $IPV4_ADDR $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
-              else
-                echo "   ⚠️  Could not resolve to IPv4, testing hostname directly:"
-                timeout 5 nc -4 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
-                echo "   Testing IPv6 (may fail if EC2 doesn't have IPv6):"
-                timeout 5 nc -6 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ IPv6 port $POSTGRES_PORT is reachable" || echo "   ❌ IPv6 port $POSTGRES_PORT NOT reachable"
-              fi
+            # Validate URL format
+            if [ -z "$POSTGRES_URL_VALUE" ] || ! echo "$POSTGRES_URL_VALUE" | grep -q "^postgresql://"; then
+              echo "   ❌ ERROR: POSTGRES_URL is malformed or empty"
+              echo "   Current value: ${POSTGRES_URL_VALUE:0:50}..."
+              echo "   Expected format: postgresql://user:pass@host:port"
+              exit 1
             fi
             
-            # Also test the alternative port (5432 vs 6543)
-            if [ "$POSTGRES_PORT" = "6543" ]; then
-              echo "   💡 Tip: If port 6543 fails, try direct connection on port 5432 (requires IP allowlisting in Supabase)"
-            elif [ "$POSTGRES_PORT" = "5432" ]; then
-              echo "   💡 Tip: If port 5432 fails, ensure your EC2 IP is allowlisted in Supabase Dashboard → Settings → Database"
+            # Extract host and port from the URL value
+            POSTGRES_HOST=$(echo "$POSTGRES_URL_VALUE" | sed 's/.*@\([^:]*\):.*/\1/' 2>/dev/null || echo "")
+            POSTGRES_PORT=$(echo "$POSTGRES_URL_VALUE" | sed 's/.*:\([0-9]*\).*/\1/' 2>/dev/null || echo "")
+            
+            if [ -z "$POSTGRES_HOST" ] || [ -z "$POSTGRES_PORT" ]; then
+              echo "   ⚠️  Could not parse host/port from POSTGRES_URL"
+              echo "   URL format: ${POSTGRES_URL_VALUE:0:80}..."
+              echo "   Skipping network connectivity test"
+            else
+              echo "Testing connection to: $POSTGRES_HOST:$POSTGRES_PORT"
+              
+              # Check if it's an IP address or hostname
+              if [[ "$POSTGRES_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "   Using IP address directly: $POSTGRES_HOST"
+                echo "   Testing IPv4 connection:"
+                timeout 5 nc -4 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
+              else
+                echo "   Resolving hostname to IPv4..."
+                IPV4_ADDR=""
+                # Try external DNS resolvers first (more reliable for IPv4)
+                if command -v dig &> /dev/null; then
+                  IPV4_ADDR=$(dig @8.8.8.8 +short A "$POSTGRES_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+                fi
+                if [ -z "$IPV4_ADDR" ] && command -v dig &> /dev/null; then
+                  IPV4_ADDR=$(dig @1.1.1.1 +short A "$POSTGRES_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+                fi
+                if [ -z "$IPV4_ADDR" ] && command -v dig &> /dev/null; then
+                  IPV4_ADDR=$(dig +short A "$POSTGRES_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+                fi
+                if [ -z "$IPV4_ADDR" ] && command -v host &> /dev/null; then
+                  IPV4_ADDR=$(host -t A "$POSTGRES_HOST" 8.8.8.8 2>/dev/null | grep "has address" | awk '{print $4}' | head -1)
+                fi
+                
+                if [ -n "$IPV4_ADDR" ]; then
+                  echo "   ✅ Resolved to IPv4: $IPV4_ADDR"
+                  echo "   Testing connection to $IPV4_ADDR:$POSTGRES_PORT:"
+                  timeout 5 nc -4 -zv $IPV4_ADDR $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
+                else
+                  echo "   ⚠️  Could not resolve to IPv4, testing hostname directly:"
+                  timeout 5 nc -4 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ Port $POSTGRES_PORT is reachable" || echo "   ❌ Port $POSTGRES_PORT NOT reachable"
+                  echo "   Testing IPv6 (may fail if EC2 doesn't have IPv6):"
+                  timeout 5 nc -6 -zv $POSTGRES_HOST $POSTGRES_PORT 2>&1 && echo "   ✅ IPv6 port $POSTGRES_PORT is reachable" || echo "   ❌ IPv6 port $POSTGRES_PORT NOT reachable"
+                fi
+              fi
+              
+              # Also test the alternative port (5432 vs 6543)
+              if [ "$POSTGRES_PORT" = "6543" ]; then
+                echo "   💡 Tip: If port 6543 fails, try direct connection on port 5432 (requires IP allowlisting in Supabase)"
+              elif [ "$POSTGRES_PORT" = "5432" ]; then
+                echo "   💡 Tip: If port 5432 fails, ensure your EC2 IP is allowlisted in Supabase Dashboard → Settings → Database"
+              fi
             fi
           fi
           
