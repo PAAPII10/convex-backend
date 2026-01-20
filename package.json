@@ -1,0 +1,26 @@
+{
+  "name": "convex-backend-self-hosted",
+  "version": "1.0.0",
+  "description": "Self-hosted Convex backend with PostgreSQL",
+  "scripts": {
+    "build": "docker compose build",
+    "up": "docker compose up -d",
+    "up:prod": "docker compose -f docker-compose.prod.yml up -d",
+    "down": "docker compose down",
+    "logs": "docker compose logs -f",
+    "logs:backend": "docker compose logs -f backend",
+    "logs:dashboard": "docker compose logs -f dashboard",
+    "restart": "docker compose restart",
+    "restart:prod": "docker compose -f docker-compose.prod.yml restart",
+    "generate-key": "bash generate-admin-key.sh",
+    "verify": "curl -f http://localhost:3210/health || echo 'Backend not running'",
+    "deploy:ec2": "bash deploy-ec2.sh"
+  },
+  "keywords": [
+    "convex",
+    "self-hosted",
+    "postgresql"
+  ],
+  "author": "",
+  "license": "MIT"
+}
