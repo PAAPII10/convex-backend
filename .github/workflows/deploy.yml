@@ -31,6 +31,13 @@ jobs:
         aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_DEFAULT_REGION }}
 
+    - name: Encode CONVEX_ENV for safe transmission
+      id: encode_env
+      run: |
+        echo "CONVEX_ENV_B64<<EOF" >> $GITHUB_OUTPUT
+        echo "${{ env.CONVEX_ENV }}" | base64 -w 0 >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
     - name: SSH into EC2 instance and deploy
       uses: appleboy/ssh-action@master
       with:
@@ -64,9 +71,17 @@ jobs:
           
           # Create or update .env file from GitHub secret
           echo "📝 Configuring environment variables..."
-          printf '%s\n' "${{ env.CONVEX_ENV }}" > .env
+          # Decode base64 encoded environment variables and write to .env file
+          echo "${{ steps.encode_env.outputs.CONVEX_ENV_B64 }}" | base64 -d > .env
           
-          echo "✅ .env file created (checking POSTGRES_URL is set)..."
+          # Remove comment lines from .env file (lines starting with #)
+          echo "🧹 Cleaning .env file (removing comments and empty lines)..."
+          sed -i '/^[[:space:]]*#/d' .env
+          sed -i '/^[[:space:]]*$/d' .env
+          
+          echo "✅ .env file created and cleaned"
+          
+          echo "✅ Checking POSTGRES_URL is set..."
           if grep -q "POSTGRES_URL" .env; then
             echo "✅ POSTGRES_URL found in .env"
           else
