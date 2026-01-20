@@ -46,11 +46,27 @@ jobs:
           mkdir -p ~/convex-backend
           cd ~/convex-backend
           
+          # Check if docker-compose.prod.yml exists, if not download official version
+          if [ ! -f docker-compose.prod.yml ]; then
+            echo "📦 Docker Compose file not found. Setting up files..."
+            if [ -d ".git" ]; then
+              echo "✅ Git repository found, files should be present"
+            else
+              echo "📥 Downloading official docker-compose.yml and adapting for production..."
+              curl -s https://raw.githubusercontent.com/get-convex/convex-backend/main/self-hosted/docker/docker-compose.yml -o docker-compose.prod.yml
+              # Modify for production: bind to localhost only
+              sed -i 's/- "${PORT:-3210}:3210"/- "127.0.0.1:3210:3210"/' docker-compose.prod.yml
+              sed -i 's/- "${SITE_PROXY_PORT:-3211}:3211"/- "127.0.0.1:3211:3211"/' docker-compose.prod.yml
+              sed -i 's/- "${DASHBOARD_PORT:-6791}:6791"/- "127.0.0.1:6791:6791"/' docker-compose.prod.yml
+              echo "✅ Created docker-compose.prod.yml from official source"
+            fi
+          fi
+          
           # Create or update .env file from GitHub secret
           echo "📝 Configuring environment variables..."
-          cat << 'EOF' > .env
+          cat << 'ENV_EOF' > .env
           ${{ env.CONVEX_ENV }}
-          EOF
+          ENV_EOF
           
           # Ensure Docker is running
           sudo systemctl start docker || true
@@ -86,7 +102,7 @@ jobs:
           sleep 15
           
           echo "🏥 Checking backend health..."
-          if curl -f http://localhost:3210/health > /dev/null 2>&1; then
+          if curl -f http://localhost:3210/version > /dev/null 2>&1; then
             echo "✅ Backend is healthy!"
           else
             echo "⚠️  Backend health check failed. Check logs with: $DOCKER_COMPOSE_CMD logs"
