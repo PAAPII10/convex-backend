@@ -10,10 +10,12 @@ Self-hosted Convex backend configured to use an existing PostgreSQL database.
 
 ## Deployment Options
 
+- **Which Guide to Follow?** → See [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md) to choose the right guide
 - **Local Development**: See [Quick Start](#quick-start) below
 - **EC2 Production**: See [EC2_DEPLOYMENT.md](./EC2_DEPLOYMENT.md) for complete AWS EC2 deployment guide
 - **Multiple Services on EC2**: See [MULTI_SERVICE_SETUP.md](./MULTI_SERVICE_SETUP.md) if running alongside other services
 - **Supabase Database**: See [SUPABASE_SETUP.md](./SUPABASE_SETUP.md) for Supabase-specific configuration
+- **CI/CD with GitHub Actions**: See [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md) for automated deployment setup
 
 ## Quick Start
 

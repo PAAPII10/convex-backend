@@ -1,0 +1,83 @@
+name: Deploy Convex Self-Hosted Backend
+
+on:
+  push:
+    branches: [ 'main' ]
+    paths:
+      - 'convex-backend/**'
+      - '.github/workflows/deploy.yml'
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  PRIVATE_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+  USERNAME: ${{ secrets.EC2_USERNAME }}
+  HOST_DNS: ${{ secrets.HOST_DNS }}
+  AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+  CONVEX_ENV: ${{ secrets.CONVEX_ENV }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Source
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+
+    - name: SSH into EC2 instance and deploy
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ env.HOST_DNS }}
+        username: ${{ env.USERNAME }}
+        key: ${{ env.PRIVATE_SSH_KEY }}
+        script: |
+          set -e
+          
+          echo "🚀 Starting Convex Backend Deployment..."
+          
+          # Navigate to convex-backend directory (create if doesn't exist)
+          mkdir -p ~/convex-backend
+          cd ~/convex-backend
+          
+          # Create or update .env file from GitHub secret
+          echo "📝 Configuring environment variables..."
+          cat << 'EOF' > .env
+          ${{ env.CONVEX_ENV }}
+          EOF
+          
+          # Ensure Docker is running
+          sudo systemctl start docker || true
+          sudo chmod 666 /var/run/docker.sock || true
+          
+          echo "📥 Pulling latest Docker images..."
+          docker compose -f docker-compose.prod.yml pull
+          
+          echo "🔄 Stopping existing services..."
+          docker compose -f docker-compose.prod.yml down || true
+          
+          echo "✅ Starting services with latest images..."
+          docker compose -f docker-compose.prod.yml up -d
+          
+          echo "⏳ Waiting for services to be healthy..."
+          sleep 15
+          
+          echo "🏥 Checking backend health..."
+          if curl -f http://localhost:3210/health > /dev/null 2>&1; then
+            echo "✅ Backend is healthy!"
+          else
+            echo "⚠️  Backend health check failed. Check logs with: docker compose logs"
+            exit 1
+          fi
+          
+          echo "📊 Service Status:"
+          docker ps --filter "name=convex" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          
+          echo ""
+          echo "✅ Deployment complete!"
