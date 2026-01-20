@@ -56,27 +56,31 @@ jobs:
           sudo systemctl start docker || true
           sudo chmod 666 /var/run/docker.sock || true
           
-          echo "📥 Pulling latest Docker images..."
-          # Try docker compose (plugin) first, fallback to docker-compose (standalone)
+          # Detect docker-compose command
+          echo "🔍 Detecting Docker Compose command..."
+          DOCKER_COMPOSE_CMD=""
           if command -v docker-compose &> /dev/null; then
-            docker-compose -f docker-compose.prod.yml pull
+            DOCKER_COMPOSE_CMD="docker-compose"
+            echo "✅ Using docker-compose (standalone)"
+          elif docker compose version &> /dev/null; then
+            DOCKER_COMPOSE_CMD="docker compose"
+            echo "✅ Using docker compose (plugin)"
           else
-            docker compose -f docker-compose.prod.yml pull
+            echo "❌ Docker Compose not found. Installing..."
+            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            DOCKER_COMPOSE_CMD="docker-compose"
+            echo "✅ Installed docker-compose"
           fi
+          
+          echo "📥 Pulling latest Docker images..."
+          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml pull
           
           echo "🔄 Stopping existing services..."
-          if command -v docker-compose &> /dev/null; then
-            docker-compose -f docker-compose.prod.yml down || true
-          else
-            docker compose -f docker-compose.prod.yml down || true
-          fi
+          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml down || true
           
           echo "✅ Starting services with latest images..."
-          if command -v docker-compose &> /dev/null; then
-            docker-compose -f docker-compose.prod.yml up -d
-          else
-            docker compose -f docker-compose.prod.yml up -d
-          fi
+          $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml up -d
           
           echo "⏳ Waiting for services to be healthy..."
           sleep 15
@@ -85,7 +89,7 @@ jobs:
           if curl -f http://localhost:3210/health > /dev/null 2>&1; then
             echo "✅ Backend is healthy!"
           else
-            echo "⚠️  Backend health check failed. Check logs with: docker compose logs"
+            echo "⚠️  Backend health check failed. Check logs with: $DOCKER_COMPOSE_CMD logs"
             exit 1
           fi
           
@@ -94,11 +98,7 @@ jobs:
           
           echo ""
           echo "📋 Docker Compose Version:"
-          if command -v docker-compose &> /dev/null; then
-            docker-compose --version
-          else
-            docker compose version
-          fi
+          $DOCKER_COMPOSE_CMD --version || $DOCKER_COMPOSE_CMD version
           
           echo ""
           echo "✅ Deployment complete!"
