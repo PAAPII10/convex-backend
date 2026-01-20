@@ -129,16 +129,71 @@ jobs:
           echo "📝 Checking if backend container exists and its exit code:"
           docker inspect convex-backend-backend-1 --format '{{.State.Status}} - Exit Code: {{.State.ExitCode}}' 2>&1 || echo "Container not found"
           
+          # Test connectivity from inside the container if it exists
+          if docker ps -a --format '{{.Names}}' | grep -q "convex-backend-backend-1"; then
+            echo "🌐 Testing network connectivity from inside backend container..."
+            POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
+            if [ -n "$POSTGRES_HOST" ]; then
+              echo "Testing from container to: $POSTGRES_HOST:6543"
+              docker exec convex-backend-backend-1 sh -c "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/$POSTGRES_HOST/6543'" 2>&1 && echo "✅ Container can reach Supabase" || echo "❌ Container CANNOT reach Supabase"
+              # Try with nc if available in container
+              docker exec convex-backend-backend-1 sh -c "timeout 5 nc -zv $POSTGRES_HOST 6543" 2>&1 || echo "Container nc test failed or nc not available"
+            fi
+          fi
+          
           echo "📝 Checking .env file (first few lines, masked):"
           head -5 .env | sed 's/=.*/=***/' || true
           
-          echo "🌐 Testing network connectivity to Supabase..."
+          # Test connectivity from host before starting containers
+          echo "🌐 Pre-flight network connectivity test..."
+          POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
+          if [ -n "$POSTGRES_HOST" ]; then
+            echo "Testing from host to: $POSTGRES_HOST:6543"
+            if timeout 10 bash -c "cat < /dev/null > /dev/tcp/$POSTGRES_HOST/6543" 2>/dev/null; then
+              echo "✅ Host can reach Supabase on port 6543"
+            else
+              echo "❌ Host CANNOT reach Supabase on port 6543"
+              echo "⚠️  This indicates an EC2 Security Group issue!"
+              echo "   Fix: AWS Console → EC2 → Security Groups → Add Outbound Rule:"
+              echo "   - Type: Custom TCP"
+              echo "   - Port: 6543"
+              echo "   - Destination: 0.0.0.0/0"
+            fi
+          fi
+          
+          echo "🌐 Testing network connectivity to Supabase from containers..."
           POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
           if [ -n "$POSTGRES_HOST" ]; then
             echo "Testing connection to: $POSTGRES_HOST:6543"
+            
+            # Get IPv4 address
+            POSTGRES_IP=$(getent hosts $POSTGRES_HOST | awk '{print $1}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            if [ -n "$POSTGRES_IP" ]; then
+              echo "Resolved to IPv4: $POSTGRES_IP"
+              echo "Testing IPv4 connection..."
+              timeout 5 bash -c "echo > /dev/tcp/$POSTGRES_IP/6543" 2>&1 && echo "✅ IPv4 Port 6543 is reachable" || echo "❌ IPv4 Port 6543 is NOT reachable"
+              timeout 5 nc -zv -4 $POSTGRES_IP 6543 2>&1 || echo "IPv4 nc test failed"
+            else
+              echo "⚠️  Could not resolve IPv4 address"
+            fi
+            
+            # Test with hostname (may use IPv6)
+            echo "Testing with hostname (may use IPv6)..."
             timeout 5 bash -c "echo > /dev/tcp/$POSTGRES_HOST/6543" 2>&1 && echo "✅ Port 6543 is reachable" || echo "❌ Port 6543 is NOT reachable"
             timeout 5 nc -zv $POSTGRES_HOST 6543 2>&1 || echo "nc test failed"
+            
+            # Test with telnet if available
+            if command -v telnet &> /dev/null; then
+              echo "Testing with telnet..."
+              echo "quit" | timeout 5 telnet $POSTGRES_HOST 6543 2>&1 | head -3 || echo "Telnet test failed"
+            fi
           fi
+          
+          echo "🔍 Checking EC2 security group configuration..."
+          echo "Current outbound rules (if available):"
+          # Try to get security group info (may not work without AWS CLI configured)
+          echo "Note: Check AWS Console → EC2 → Security Groups → Outbound rules"
+          echo "Required: Allow outbound TCP on port 6543 to 0.0.0.0/0"
           
           echo "⏳ Waiting for backend to be healthy..."
           sleep 10
@@ -158,8 +213,31 @@ jobs:
             echo "Testing DNS resolution:"
             POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
             if [ -n "$POSTGRES_HOST" ]; then
-              nslookup $POSTGRES_HOST 2>&1 | head -5 || echo "DNS lookup failed"
+              echo "DNS lookup for $POSTGRES_HOST:"
+              nslookup $POSTGRES_HOST 2>&1 | head -10 || echo "DNS lookup failed"
+              echo ""
+              echo "IPv4 addresses:"
+              getent hosts $POSTGRES_HOST | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || echo "No IPv4 addresses found"
+              echo ""
+              echo "IPv6 addresses:"
+              getent hosts $POSTGRES_HOST | grep -E '^[0-9a-fA-F:]+' || echo "No IPv6 addresses found"
             fi
+            echo ""
+            echo "🔧 Troubleshooting steps:"
+            echo "1. Check EC2 Security Group → Outbound rules:"
+            echo "   - Type: Custom TCP"
+            echo "   - Port: 6543"
+            echo "   - Destination: 0.0.0.0/0 (or specific Supabase IP)"
+            echo ""
+            echo "2. Verify Supabase database is accessible:"
+            echo "   - Check Supabase Dashboard → Settings → Database"
+            echo "   - Ensure connection pooler (port 6543) is enabled"
+            echo ""
+            echo "3. Test from EC2 instance directly:"
+            echo "   ssh into EC2 and run: telnet db.rxzzrjokpozbmdzunkcr.supabase.co 6543"
+            echo ""
+            echo "4. Check Docker network configuration:"
+            docker network inspect bridge 2>&1 | grep -A 5 "IPAM" || echo "Could not inspect Docker network"
             exit 1
           fi
           
