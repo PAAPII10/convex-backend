@@ -243,6 +243,7 @@ When editing `.env.production` in `/opt/convex/`, you need to fill in these valu
 # --- Core Configuration ---
 NODE_ENV=production
 CONVEX_DEPLOYMENT=production
+# Note: docker-compose.yml maps CONVEX_INSTANCE_NAME to INSTANCE_NAME
 CONVEX_INSTANCE_NAME=production-instance
 CONVEX_INSTANCE_SECRET=<GENERATE_RANDOM_STRING>
 # Generate random string: openssl rand -hex 32
@@ -297,6 +298,7 @@ AWS_SECRET_ACCESS_KEY=<YOUR_SUPABASE_S3_SECRET_KEY>
 AWS_REGION=us-east-1
 AWS_S3_ENDPOINT=https://<project-id>.supabase.co/storage/v1/s3
 # Get this from Supabase Dashboard → Settings → API → Storage → S3 API
+# Note: docker-compose.yml maps AWS_S3_ENDPOINT to S3_ENDPOINT_URL
 
 # Convex requires 5 S3 buckets for different storage types
 # You can use the same bucket name for all (simpler), or create separate buckets
@@ -684,12 +686,26 @@ docker-compose pull
 # Make sure you're in /opt/convex/
 cd /opt/convex
 
+# Make sure you have the latest docker-compose.yml
+# If you updated it in the repository, copy it:
+# cp /home/ubuntu/convex-backend/docker-compose.yml /opt/convex/
+
+# Verify .env.production exists (docker-compose.yml reads from it)
+ls -la .env.production
+# Should exist
+
 # Start all services (use the command that works for you)
 docker compose up -d
 # OR if above doesn't work:
 docker-compose up -d
 
 # The -d flag runs in detached mode (background)
+# docker-compose.yml will:
+# - Read environment variables from .env.production
+# - Map CONVEX_INSTANCE_NAME → INSTANCE_NAME
+# - Map CONVEX_INSTANCE_SECRET → INSTANCE_SECRET
+# - Map AWS_S3_ENDPOINT → S3_ENDPOINT_URL
+# - Use named volume 'data' for storage
 
 # Check if containers are running
 docker compose ps
@@ -697,8 +713,12 @@ docker compose ps
 docker-compose ps
 
 # Should show:
-# - convex-backend (running)
-# - convex-dashboard (running)
+# - convex-backend (running, then "healthy" after ~10-30 seconds)
+# - convex-dashboard (running after backend is healthy)
+
+# Test backend health (uses /version endpoint)
+curl http://localhost:3210/version
+# Should return version information
 ```
 
 ### Step 6.4: Check Logs and Troubleshoot
@@ -816,6 +836,10 @@ docker compose up -d dashboard
 ### Step 6.5: Generate Admin Key
 
 ```bash
+# Wait for backend to be healthy first
+docker compose ps backend
+# Should show "healthy" status
+
 # Generate admin key (first time only)
 docker compose exec backend ./generate_admin_key.sh
 
@@ -832,6 +856,15 @@ cat /opt/convex/admin_key.txt
 # - Convex CLI authentication
 # - Dashboard access
 ```
+
+**Note:** The docker-compose.yml uses:
+- **env_file**: Reads all variables from `.env.production`
+- **Variable mapping**: Automatically maps your variable names:
+  - `CONVEX_INSTANCE_NAME` → `INSTANCE_NAME`
+  - `CONVEX_INSTANCE_SECRET` → `INSTANCE_SECRET`
+  - `AWS_S3_ENDPOINT` → `S3_ENDPOINT_URL`
+- **Named volume**: Uses `data` volume (managed by Docker) instead of `./data` directory
+- **Healthcheck**: Uses `/version` endpoint (faster startup)
 
 ---
 
@@ -855,14 +888,20 @@ docker stats
 ### Step 7.2: Test API Endpoints
 
 ```bash
+# Test backend version endpoint (used by healthcheck)
+curl http://localhost:3210/version
+# Should return version information
+
 # Test backend health endpoint
 curl http://localhost:3210/health
+# Should return health status
 
 # Test from outside (replace with your domain)
-curl https://api.yourdomain.com/health
+curl https://sync.koanpay.com/version
+curl https://sync.koanpay.com/health
 
 # Test dashboard (replace with your domain)
-curl https://api.yourdomain.com/dashboard/
+curl https://sync.koanpay.com/dashboard/
 ```
 
 ### Step 7.3: Access Dashboard
@@ -992,6 +1031,17 @@ docker compose up -d
 
 # Check environment variables
 cat .env.production
+
+# Verify Docker Compose reads environment correctly
+docker compose config | grep -E "INSTANCE_NAME|POSTGRES_URL|S3_ENDPOINT"
+
+# Test backend endpoints
+curl http://localhost:3210/version
+curl http://localhost:3210/health
+
+# Check Docker volumes (data is stored in named volume)
+docker volume ls
+docker volume inspect convex-backend_data
 
 # Check nginx status (Ubuntu systemd)
 sudo systemctl status nginx
@@ -1128,6 +1178,27 @@ docker-compose --version
 # docker compose (newer, plugin version)
 # OR
 # docker-compose (older, standalone version)
+```
+
+### Problem: Environment variables not being read
+
+**Solution:** Check docker-compose.yml configuration:
+
+```bash
+# Verify .env.production exists
+ls -la /opt/convex/.env.production
+
+# Check if docker-compose.yml has env_file
+grep "env_file" /opt/convex/docker-compose.yml
+# Should show: env_file: - .env.production
+
+# Verify variables are being read
+docker compose config | grep -E "INSTANCE_NAME|POSTGRES_URL|S3_ENDPOINT"
+# Should show your values
+
+# If variables are missing, check variable name mapping:
+# - CONVEX_INSTANCE_NAME → INSTANCE_NAME
+# - AWS_S3_ENDPOINT → S3_ENDPOINT_URL
 ```
 
 ### Problem: Containers won't start
