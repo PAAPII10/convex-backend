@@ -57,13 +57,26 @@ jobs:
           sudo chmod 666 /var/run/docker.sock || true
           
           echo "📥 Pulling latest Docker images..."
-          docker compose -f docker-compose.prod.yml pull
+          # Try docker compose (plugin) first, fallback to docker-compose (standalone)
+          if command -v docker-compose &> /dev/null; then
+            docker-compose -f docker-compose.prod.yml pull
+          else
+            docker compose -f docker-compose.prod.yml pull
+          fi
           
           echo "🔄 Stopping existing services..."
-          docker compose -f docker-compose.prod.yml down || true
+          if command -v docker-compose &> /dev/null; then
+            docker-compose -f docker-compose.prod.yml down || true
+          else
+            docker compose -f docker-compose.prod.yml down || true
+          fi
           
           echo "✅ Starting services with latest images..."
-          docker compose -f docker-compose.prod.yml up -d
+          if command -v docker-compose &> /dev/null; then
+            docker-compose -f docker-compose.prod.yml up -d
+          else
+            docker compose -f docker-compose.prod.yml up -d
+          fi
           
           echo "⏳ Waiting for services to be healthy..."
           sleep 15
@@ -78,6 +91,14 @@ jobs:
           
           echo "📊 Service Status:"
           docker ps --filter "name=convex" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          
+          echo ""
+          echo "📋 Docker Compose Version:"
+          if command -v docker-compose &> /dev/null; then
+            docker-compose --version
+          else
+            docker compose version
+          fi
           
           echo ""
           echo "✅ Deployment complete!"
