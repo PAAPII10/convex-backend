@@ -118,6 +118,14 @@ jobs:
           echo "📝 Checking .env file (first few lines, masked):"
           head -5 .env | sed 's/=.*/=***/' || true
           
+          echo "🌐 Testing network connectivity to Supabase..."
+          POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
+          if [ -n "$POSTGRES_HOST" ]; then
+            echo "Testing connection to: $POSTGRES_HOST:6543"
+            timeout 5 bash -c "echo > /dev/tcp/$POSTGRES_HOST/6543" 2>&1 && echo "✅ Port 6543 is reachable" || echo "❌ Port 6543 is NOT reachable"
+            timeout 5 nc -zv $POSTGRES_HOST 6543 2>&1 || echo "nc test failed"
+          fi
+          
           echo "⏳ Waiting for backend to be healthy..."
           sleep 10
           
@@ -130,6 +138,14 @@ jobs:
             $DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs backend 2>&1 || docker logs convex-backend-backend-1 2>&1 || true
             echo "📝 Checking POSTGRES_URL:"
             grep "POSTGRES_URL" .env | head -1 | sed 's/=.*/=***/' || echo "POSTGRES_URL not found in .env"
+            echo "🌐 Network diagnostics:"
+            echo "Testing internet connectivity:"
+            curl -s --max-time 5 https://www.google.com > /dev/null && echo "✅ Internet connection works" || echo "❌ No internet connection"
+            echo "Testing DNS resolution:"
+            POSTGRES_HOST=$(grep POSTGRES_URL .env | sed 's/.*@\([^:]*\):.*/\1/' || echo "")
+            if [ -n "$POSTGRES_HOST" ]; then
+              nslookup $POSTGRES_HOST 2>&1 | head -5 || echo "DNS lookup failed"
+            fi
             exit 1
           fi
           
