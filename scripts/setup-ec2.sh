@@ -34,9 +34,14 @@ if ! groups | grep -q docker; then
 fi
 
 echo -e "${GREEN}Step 4: Creating directory structure...${NC}"
+sudo mkdir -p /opt/convex
+sudo mkdir -p /opt/convex/scripts
 sudo mkdir -p /opt/convex/data
 sudo mkdir -p /opt/convex/nginx
 sudo chown -R $USER:$USER /opt/convex
+
+echo -e "${YELLOW}Note: After setup, you need to copy files from your repository to /opt/convex/${NC}"
+echo -e "${YELLOW}Repository location: /home/ubuntu/convex-backend/ (or wherever you cloned it)${NC}"
 
 echo -e "${GREEN}Step 5: Setting up Nginx...${NC}"
 sudo systemctl enable nginx

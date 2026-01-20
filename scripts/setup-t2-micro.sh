@@ -59,6 +59,15 @@ free -h
 
 # Update .env.production if it exists
 ENV_FILE="/opt/convex/.env.production"
+ENV_DIR="/opt/convex"
+
+# Check if /opt/convex directory exists
+if [ ! -d "$ENV_DIR" ]; then
+    echo -e "${RED}Error: /opt/convex/ directory does not exist!${NC}"
+    echo "Please create it first and copy files from your repository."
+    exit 1
+fi
+
 if [ -f "$ENV_FILE" ]; then
     echo ""
     echo -e "${GREEN}Step 2: Updating ACTION_WORKER_COUNT in .env.production...${NC}"
@@ -109,8 +118,10 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         # This is a simple approach - user should verify
         echo "Please manually add memory limits to docker-compose.yml"
         echo "See the example above for the format."
+        echo "File location: $DOCKER_COMPOSE"
     else
-        echo "docker-compose.yml not found at $DOCKER_COMPOSE"
+        echo -e "${YELLOW}docker-compose.yml not found at $DOCKER_COMPOSE${NC}"
+        echo "Make sure you've copied docker-compose.yml to /opt/convex/"
     fi
 fi
 

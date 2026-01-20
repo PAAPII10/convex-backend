@@ -1,450 +1,1197 @@
-# Self-Hosted Convex Backend on EC2
+# Self-Hosted Convex Backend on EC2 - Detailed Setup Guide (Ubuntu)
 
-Complete setup guide for self-hosting Convex backend on AWS EC2 with GitHub Actions CI/CD, using Supabase PostgreSQL and S3-compatible storage.
+Complete step-by-step guide for self-hosting Convex backend on AWS EC2 (Ubuntu 22.04 LTS) with GitHub Actions CI/CD, using Supabase PostgreSQL and S3-compatible storage.
 
-## Architecture
+**This guide is specifically written for Ubuntu 22.04 LTS on EC2.**
 
-```
-┌─────────────────┐
-│  GitHub Repo    │
-│  + GitHub       │
-│    Actions      │
-└────────┬────────┘
-         │ SSH Deploy
-         ▼
-┌─────────────────┐
-│  EC2 Instance   │
-│  ┌───────────┐  │
-│  │  Docker   │  │
-│  │  Compose  │  │
-│  └───────────┘  │
-│  ┌───────────┐  │
-│  │  Nginx    │  │
-│  │  (Proxy)  │  │
-│  └───────────┘  │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌─────────┐ ┌──────────┐
-│Supabase │ │ Supabase │
-│Postgres │ │   S3     │
-└─────────┘ └──────────┘
+## Prerequisites - Ubuntu 22.04 LTS
+
+**This guide is specifically for Ubuntu 22.04 LTS on EC2.**
+
+Verify your Ubuntu version:
+```bash
+# Check Ubuntu version
+lsb_release -a
+# Should show: Ubuntu 22.04 LTS
+
+# OR
+cat /etc/os-release
 ```
 
-## Prerequisites
+**Default user:** This guide assumes you're using the `ubuntu` user (default on EC2 Ubuntu instances).
 
-- AWS EC2 instance (Ubuntu 22.04 LTS)
-  - **Recommended**: `t3.medium` or higher (2 vCPU, 4GB RAM)
-  - **Minimum**: `t2.micro` or `t3.micro` (1GB RAM) - for testing/very low-traffic
-  - **Note**: t2.micro (1 vCPU) is more constrained than t3.micro (2 vCPU)
-- Supabase project with PostgreSQL database
-- Supabase Storage bucket configured for S3-compatible access
-- Domain name pointing to EC2 instance
-- GitHub repository with Actions enabled
+**Package manager:** All commands use `apt` (Ubuntu's package manager).
 
-## Phase 1: EC2 Server Preparation
+---
 
-### 1. Create EC2 Instance
+## Current Status
 
-- **OS**: Ubuntu 22.04 LTS
-- **Instance Type**: 
-  - **Recommended**: `t3.medium` (2 vCPU, 4GB RAM) - for production workloads
-  - **Minimum**: `t2.micro` (1 vCPU, 1GB RAM) or `t3.micro` (2 vCPU, 1GB RAM) - for testing/very low-traffic
-  - **Note**: t2.micro/t3.micro will experience performance limitations under load
-- **Storage**: Minimum 20GB (30GB recommended)
-- **Security Group**:
-  - Port 22 (SSH)
-  - Port 80 (HTTP)
-  - Port 443 (HTTPS)
+✅ **You have completed:**
+- Phase 1: EC2 Server Preparation (cloned repository)
+- Phase 2: Supabase Configuration (PostgreSQL and S3 Storage ready)
 
-### 2. Initial Server Setup
+📋 **Next Steps:**
+- Phase 3: Environment Configuration (create `.env.production` file)
+- Phase 4: Copy files to `/opt/convex/` directory
+- Phase 5: Nginx Configuration
+- Phase 6: Initial Deployment
 
-SSH into your EC2 instance and run:
+---
+
+## Phase 3: Environment Configuration - CREATE `.env.production` FILE
+
+### Step 3.1: Navigate to Your Repository Directory
+
+You should already be in your cloned repository. If not:
 
 ```bash
-# Clone this repository or upload files
-git clone <your-repo-url>
+# Find where you cloned the repository (Ubuntu home directory)
+cd ~
+# On Ubuntu EC2, this is typically /home/ubuntu
+
+ls -la
+# Look for a directory like 'convex-backend' or your repository name
+
+# Navigate to it (replace 'convex-backend' with your actual folder name)
 cd convex-backend
 
-# Run setup script
+# Verify you're in the right place - you should see these files:
+ls -la
+# You should see: docker-compose.yml, env.production.example, scripts/, nginx/, etc.
+
+# Check current user (should be 'ubuntu' on EC2)
+whoami
+```
+
+### Step 3.2: Copy Files to `/opt/convex/` Directory
+
+**IMPORTANT:** Your repository is in `/home/ubuntu/convex-backend/` (where you cloned it), but deployment files MUST be in `/opt/convex/` directory.
+
+**You need to CREATE `/opt/convex/` and copy files there.**
+
+**For Ubuntu:**
+
+```bash
+# Step 1: Make sure you're in your repository directory
+cd ~/convex-backend
+# OR
+cd /home/ubuntu/convex-backend
+
+# Verify you're in the right place
+pwd
+# Should show: /home/ubuntu/convex-backend
+
+# Verify repository files exist
+ls -la
+# Should see: docker-compose.yml, env.production.example, scripts/, nginx/, etc.
+
+# Step 2: CREATE the deployment directory /opt/convex (it doesn't exist yet!)
+sudo mkdir -p /opt/convex
+sudo mkdir -p /opt/convex/scripts
+sudo mkdir -p /opt/convex/data
+sudo mkdir -p /opt/convex/nginx
+
+# Step 3: Change ownership so you can write to it (Ubuntu)
+sudo chown -R $USER:$USER /opt/convex
+
+# Step 4: Verify ownership (Ubuntu)
+ls -ld /opt/convex
+# Should show your username (ubuntu) as owner
+
+# Step 5: Verify the directory was created
+ls -la /opt/convex/
+# Should show empty or just the directories we created
+
+# Step 6: Copy files from repository to /opt/convex/
+# (Make sure you're still in /home/ubuntu/convex-backend/)
+
+# Copy docker-compose.yml
+cp docker-compose.yml /opt/convex/
+
+# Copy environment template
+cp env.production.example /opt/convex/
+
+# Copy all scripts
+cp -r scripts/* /opt/convex/scripts/
+chmod +x /opt/convex/scripts/*.sh
+
+# Copy nginx configuration
+cp -r nginx/* /opt/convex/nginx/
+
+# Step 7: Verify files are copied
+ls -la /opt/convex/
+# You should now see: docker-compose.yml, env.production.example, scripts/, nginx/, data/
+
+# Verify scripts are there
+ls -la /opt/convex/scripts/
+# Should show: generate-env.sh, setup-ec2.sh, setup-nginx.sh, etc.
+```
+
+### Step 3.3: Create `.env.production` File in `/opt/convex/` Directory
+
+**CRITICAL:** The `.env.production` file MUST be created in `/opt/convex/` directory, NOT in your repository folder (`/home/ubuntu/convex-backend/`).
+
+**Directory Structure:**
+- **Repository:** `/home/ubuntu/convex-backend/` (where you cloned - don't create .env here!)
+- **Deployment:** `/opt/convex/` (where everything runs - create .env here!)
+
+```bash
+# Navigate to /opt/convex/ (NOT your repository folder!)
+cd /opt/convex
+
+# Verify you're in the right directory
+pwd
+# Should show: /opt/convex
+# NOT: /home/ubuntu/convex-backend
+
+# List files to confirm
+ls -la
+# You should see: docker-compose.yml, env.production.example, scripts/, nginx/, data/
+# If you don't see these files, go back to Step 3.2 and copy them!
+
+# Method 1: Use the interactive script (RECOMMENDED)
+chmod +x scripts/generate-env.sh
+./scripts/generate-env.sh
+
+# The script will ask you for:
+# - Your domain (e.g., api.yourdomain.com)
+# - Supabase PostgreSQL connection string
+# - Supabase S3 Access Key ID
+# - Supabase S3 Secret Access Key
+# - Supabase S3 Endpoint
+# - S3 Bucket name
+# - S3 Region (default: us-east-1)
+# - Action Worker Count (default: 8, but use 1 for t2.micro)
+
+# After the script completes, it will show:
+# "✅ Environment file created at /opt/convex/.env.production"
+# "⚠️  Remember to keep this file secure and never commit it to git!"
+```
+
+**OR Method 2: Create manually**
+
+```bash
+# Navigate to /opt/convex/
+cd /opt/convex
+
+# Copy the example file
+cp env.production.example .env.production
+
+# Edit the file with nano editor (Ubuntu default)
+nano .env.production
+
+# Nano editor instructions:
+# 1. Use arrow keys to move cursor
+# 2. Type to add/edit text
+# 3. To save: Press Ctrl + O, then press Enter
+# 4. To exit: Press Ctrl + X
+# 5. If you see "Save modified buffer?" press Y then Enter
+```
+
+### Step 3.4: Fill in `.env.production` File Details
+
+**How to Edit the File (Ubuntu):**
+
+You have several options to edit the `.env.production` file:
+
+**Option 1: Using nano (Easiest - Recommended for beginners)**
+
+```bash
+# Navigate to /opt/convex/
+cd /opt/convex
+
+# Open the file with nano editor
+nano .env.production
+
+# Nano editor controls:
+# - Use arrow keys to navigate
+# - Type to edit text
+# - Press Ctrl + O to save (then press Enter)
+# - Press Ctrl + X to exit
+# - Press Ctrl + K to delete a line
+# - Press Ctrl + U to paste
+```
+
+**Option 2: Using vim (Advanced)**
+
+```bash
+# Navigate to /opt/convex/
+cd /opt/convex
+
+# Open the file with vim editor
+vim .env.production
+
+# Vim editor controls:
+# - Press 'i' to enter INSERT mode (you'll see -- INSERT -- at bottom)
+# - Use arrow keys to navigate and type to edit
+# - Press Esc to exit INSERT mode
+# - Type ':wq' and press Enter to save and quit
+# - Type ':q!' and press Enter to quit without saving
+```
+
+**Option 3: Using a text editor from your local machine**
+
+```bash
+# On your LOCAL machine, use VS Code with Remote SSH extension
+# OR use WinSCP/FileZilla to download, edit, and upload the file
+# OR use scp to copy file to local machine, edit, then copy back:
+```
+
+When editing `.env.production` in `/opt/convex/`, you need to fill in these values:
+
+```env
+# --- Core Configuration ---
+NODE_ENV=production
+CONVEX_DEPLOYMENT=production
+CONVEX_INSTANCE_NAME=production-instance
+CONVEX_INSTANCE_SECRET=<GENERATE_RANDOM_STRING>
+# Generate random string: openssl rand -hex 32
+
+# --- Public URLs ---
+CONVEX_SITE_URL=https://api.yourdomain.com
+CONVEX_CLOUD_ORIGIN=https://api.yourdomain.com
+CONVEX_SITE_ORIGIN=https://api.yourdomain.com
+# Replace 'api.yourdomain.com' with your actual domain
+
+# --- Database (Supabase PostgreSQL) ---
+# IMPORTANT: Use POSTGRES_URL (not DATABASE_URL) - DATABASE_URL is deprecated
+# Do NOT include /DATABASE in the URL
+# Convex will automatically use a database based on CONVEX_INSTANCE_NAME
+# 
+# For DIRECT connection (port 5432):
+# POSTGRES_URL=postgresql://postgres:[YOUR-PASSWORD]@db.xxxxx.supabase.co:5432
+# 
+# For POOLER connection (port 6543) - RECOMMENDED for production:
+# POSTGRES_URL=postgresql://postgres.xxxxx:[YOUR-PASSWORD]@aws-1-ap-south-1.pooler.supabase.com:6543
+# 
+# If you get TLS certificate errors, add ?sslmode=require:
+# POSTGRES_URL=postgresql://postgres.xxxxx:[YOUR-PASSWORD]@aws-1-ap-south-1.pooler.supabase.com:6543?sslmode=require
+# 
+# Get connection string from: Supabase Dashboard → Settings → Database → Connection string
+# Remove /postgres from the end
+POSTGRES_URL=postgresql://USER:PASSWORD@HOST:PORT
+
+# --- Action Compute ---
+# ACTION_WORKER_COUNT controls how many Convex actions can run concurrently
+# 
+# What are Actions?
+# - Actions are server-side functions that can call external APIs, make HTTP requests,
+#   interact with third-party services, and perform non-deterministic operations
+# - Examples: Sending emails, calling OpenAI API, webhooks, file processing
+# - Actions run on port 3211 (HTTP actions endpoint)
+#
+# What does ACTION_WORKER_COUNT do?
+# - Sets the number of worker processes/threads that handle action executions
+# - Higher = more concurrent actions, but uses more CPU and memory
+# - Lower = fewer concurrent actions, but uses less resources
+#
+# Recommended values:
+ACTION_WORKER_COUNT=1
+# For t2.micro: Use 1
+# For t3.micro: Use 2-4
+# For t3.small+: Use 4-8
+
+# --- File Storage (Supabase S3-compatible) ---
+AWS_ACCESS_KEY_ID=<YOUR_SUPABASE_S3_ACCESS_KEY>
+AWS_SECRET_ACCESS_KEY=<YOUR_SUPABASE_S3_SECRET_KEY>
+AWS_REGION=us-east-1
+AWS_S3_ENDPOINT=https://<project-id>.supabase.co/storage/v1/s3
+# Get this from Supabase Dashboard → Settings → API → Storage → S3 API
+
+# Convex requires 5 S3 buckets for different storage types
+# You can use the same bucket name for all (simpler), or create separate buckets
+# Create these buckets in Supabase Storage dashboard
+S3_STORAGE_FILES_BUCKET=convex-files
+S3_STORAGE_MODULES_BUCKET=convex-modules
+S3_STORAGE_EXPORTS_BUCKET=convex-exports
+S3_STORAGE_SNAPSHOT_IMPORTS_BUCKET=convex-snapshots
+S3_STORAGE_SEARCH_BUCKET=convex-search
+
+# OR use the same bucket for all (simpler - recommended):
+# S3_STORAGE_FILES_BUCKET=convex-storage
+# S3_STORAGE_MODULES_BUCKET=convex-storage
+# S3_STORAGE_EXPORTS_BUCKET=convex-storage
+# S3_STORAGE_SNAPSHOT_IMPORTS_BUCKET=convex-storage
+# S3_STORAGE_SEARCH_BUCKET=convex-storage
+
+# MAX_FILE_SIZE_BYTES: Maximum file size for Convex file storage (in bytes)
+# Default: 104857600 = 100 MB
+# Controls the maximum size of files that can be uploaded to Convex storage
+# Files larger than this will be rejected
+MAX_FILE_SIZE_BYTES=104857600
+
+# --- Security ---
+JWT_SIGNING_KEY=<GENERATE_RANDOM_STRING>
+# Generate random string: openssl rand -hex 32
+```
+
+**How to get Supabase values:**
+
+1. **PostgreSQL Connection String:**
+   - Go to Supabase Dashboard
+   - Settings → Database
+   - Under "Connection string", you have two options:
+   
+   **Option A: Direct Connection (port 5432)**
+   - Select "URI" tab
+   - Copy the connection string
+   - Format: `postgresql://postgres:[PASSWORD]@db.xxxxx.supabase.co:5432/postgres`
+   - **Remove `/postgres` and any `?sslmode=require`** 
+   - Use: `postgresql://postgres:[PASSWORD]@db.xxxxx.supabase.co:5432`
+   
+   **Option B: Pooler Connection (port 6543) - RECOMMENDED**
+   - Select "Session mode" or "Transaction mode" tab
+   - Copy the pooler connection string
+   - Format: `postgresql://postgres.xxxxx:[PASSWORD]@aws-1-ap-south-1.pooler.supabase.com:6543/postgres`
+   - **Remove `/postgres` at the end**
+   - Use: `postgresql://postgres.xxxxx:[PASSWORD]@aws-1-ap-south-1.pooler.supabase.com:6543`
+   - Pooler is better for production as it handles connection pooling
+   
+   **IMPORTANT:** Convex will automatically create/use a database based on your `CONVEX_INSTANCE_NAME` (e.g., `production-instance` becomes `production_instance` database)
+
+2. **S3 Credentials:**
+   - Go to Supabase Dashboard
+   - Settings → API
+   - Scroll to "Storage" section
+   - Enable "S3 API" if not already enabled
+   - Copy:
+     - Access Key ID
+     - Secret Access Key
+     - S3 Endpoint (format: `https://xxxxx.supabase.co/storage/v1/s3`)
+
+3. **S3 Buckets (Convex requires 5 buckets):**
+   - Go to Supabase Dashboard → Storage
+   - Create buckets (you can use the same name for all, or create separate ones):
+     - `convex-files` (or `convex-storage` for all)
+     - `convex-modules` (or same as above)
+     - `convex-exports` (or same as above)
+     - `convex-snapshots` (or same as above)
+     - `convex-search` (or same as above)
+   - Make buckets public if needed (or configure proper permissions)
+   - Use bucket names in the S3_STORAGE_*_BUCKET variables
+   - **Simpler option:** Create one bucket (e.g., `convex-storage`) and use it for all 5 variables
+
+4. **Generate Random Strings (Ubuntu):**
+   ```bash
+   # Generate CONVEX_INSTANCE_SECRET (Ubuntu has openssl by default)
+   openssl rand -hex 32
+   
+   # Generate JWT_SIGNING_KEY
+   openssl rand -hex 32
+   
+   # If openssl is not installed (unlikely on Ubuntu 22.04):
+   # sudo apt install -y openssl
+   ```
+
+### Step 3.5: Verify `.env.production` File
+
+**After running `./scripts/generate-env.sh`, verify the credentials were added:**
+
+```bash
+# Make sure you're in /opt/convex/
+cd /opt/convex
+
+# Check file exists
+ls -la .env.production
+# Should show the file with permissions (should be readable only by you)
+
+# View file contents (be careful, it contains secrets)
+cat .env.production
+
+# Verify all required variables are set (shows only non-comment lines)
+grep -v "^#" .env.production | grep -v "^$"
+# Should show all your environment variables with values
+
+# Check specific important variables:
+echo "=== Checking Key Variables ==="
+grep "DATABASE_URL" .env.production
+grep "AWS_ACCESS_KEY_ID" .env.production
+grep "AWS_S3_ENDPOINT" .env.production
+grep "CONVEX_CLOUD_ORIGIN" .env.production
+grep "ACTION_WORKER_COUNT" .env.production
+
+# Verify file permissions (should be 600 - readable/writable only by owner)
+ls -l .env.production
+# Should show: -rw------- (only you can read/write)
+```
+
+**What to look for:**
+
+✅ **File exists:** `ls -la .env.production` shows the file  
+✅ **Has content:** `cat .env.production` shows your values (not placeholders)  
+✅ **All variables set:** No empty values or `<PLACEHOLDER>` text  
+✅ **Correct format:** Each line is `VARIABLE_NAME=value` (no spaces around `=`)  
+✅ **Secure permissions:** File is readable only by you (`-rw-------`)
+
+**Common issues:**
+
+❌ **File not found:** Make sure you're in `/opt/convex/` directory  
+❌ **Empty values:** Re-run the script or edit manually  
+❌ **Wrong permissions:** Run `chmod 600 .env.production` to secure it
+
+---
+
+## Phase 4: Initial Server Setup (If Not Done)
+
+**For Ubuntu 22.04 LTS:**
+
+If you haven't run the setup script yet:
+
+```bash
+# Navigate to your repository (where you cloned it)
+cd ~/convex-backend
+# Or wherever you cloned it
+
+# Run the setup script (Ubuntu-specific)
 chmod +x scripts/setup-ec2.sh
 ./scripts/setup-ec2.sh
 
-# If you were added to docker group, either:
-newgrp docker
-# OR log out and log back in
+# This will install (using apt package manager):
+# - Docker (via apt)
+# - Docker Compose (via apt)
+# - Nginx (via apt)
+# - Certbot (via apt)
 
-# For t2.micro instances, run optimization script:
+# After setup, add yourself to docker group (if prompted)
+newgrp docker
+# OR logout and login again
+
+# Verify Ubuntu version (should show 22.04)
+lsb_release -a
+```
+
+### For t2.micro Instances: Run Optimization
+
+```bash
+# Navigate to /opt/convex/
+cd /opt/convex
+
+# Run t2.micro optimization script
 chmod +x scripts/setup-t2-micro.sh
 ./scripts/setup-t2-micro.sh
+
+# This will:
+# - Create 2GB swap space (REQUIRED for t2.micro)
+# - Set ACTION_WORKER_COUNT=1 in .env.production
+# - Show memory status
 ```
 
-### 3. Directory Structure
+---
 
-The setup script creates:
+## Phase 5: Nginx Configuration
 
-```
-/opt/convex/
- ├── docker-compose.yml
- ├── .env.production
- ├── data/
- └── nginx/
-```
+### Step 5.1: Update Nginx Configuration with Your Domain
 
-### 4. Instance Type Considerations
-
-#### t2.micro (1 vCPU, 1GB RAM) - **Absolute Minimum**
-- ✅ **Suitable for**: Testing, development, very light workloads
-- ⚠️ **Limitations**: 
-  - Only 1 vCPU (single-threaded operations)
-  - Limited memory may cause OOM errors
-  - Very slow under any load
-  - **Must** reduce `ACTION_WORKER_COUNT` to 1-2
-  - **Highly recommended** to enable swap space
-- 💡 **Optimization tips** (REQUIRED for t2.micro):
-  ```bash
-  # In .env.production - reduce worker count
-  ACTION_WORKER_COUNT=1
-  
-  # Enable swap to prevent OOM (REQUIRED for t2.micro)
-  sudo fallocate -l 2G /swapfile
-  sudo chmod 600 /swapfile
-  sudo mkswap /swapfile
-  sudo swapon /swapfile
-  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-  
-  # Verify swap is active
-  free -h
-  ```
-
-#### t3.micro (2 vCPU, 1GB RAM)
-- ✅ **Suitable for**: Testing, development, low-traffic applications
-- ⚠️ **Limitations**: 
-  - Limited memory may cause OOM (Out of Memory) errors under load
-  - Slower response times during peak usage
-  - Should reduce `ACTION_WORKER_COUNT` to 2-4
-- 💡 **Optimization tips**:
-  ```bash
-  # Reduce worker count in .env.production
-  ACTION_WORKER_COUNT=2
-  
-  # Enable swap to prevent OOM (recommended)
-  sudo fallocate -l 2G /swapfile
-  sudo chmod 600 /swapfile
-  sudo mkswap /swapfile
-  sudo swapon /swapfile
-  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-  ```
-
-#### t3.small (2GB RAM)
-- ✅ **Suitable for**: Small production workloads, moderate traffic
-- 💡 **Recommended**: Good balance of cost and performance
-
-#### t3.medium (4GB RAM) or higher
-- ✅ **Suitable for**: Production workloads, higher traffic
-- 💡 **Recommended**: Best for production environments
-
-**Cost Comparison** (approximate):
-- t2.micro: ~$7-8/month (Free tier eligible)
-- t3.micro: ~$7-8/month
-- t3.small: ~$15/month
-- t3.medium: ~$30/month
-
-## Phase 2: Supabase Configuration
-
-### 1. PostgreSQL Setup
-
-1. Create a Supabase project
-2. Go to **Settings** → **Database**
-3. Copy the connection string or collect:
-   - Host
-   - Port (usually 5432)
-   - Database name
-   - Username
-   - Password
-
-**Connection String Format:**
-```
-postgresql://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require
-```
-
-### 2. Supabase Storage (S3-compatible)
-
-1. Go to **Storage** in Supabase dashboard
-2. Create a new bucket (e.g., `convex-files`)
-3. Go to **Settings** → **API** → **Storage**
-4. Enable S3 API and collect:
-   - S3 Endpoint: `https://<project-id>.supabase.co/storage/v1/s3`
-   - Access Key ID
-   - Secret Access Key
-   - Region (usually `us-east-1`)
-
-## Phase 3: Environment Configuration
-
-### Generate Environment File
+**For Ubuntu:**
 
 ```bash
+# Navigate to /opt/convex/
 cd /opt/convex
-chmod +x scripts/generate-env.sh
-./scripts/generate-env.sh
+
+# Edit nginx configuration (Ubuntu comes with nano by default)
+nano nginx/nginx.conf
+
+# OR use vim if you prefer
+# vim nginx/nginx.conf
 ```
 
-Or manually create `.env.production`:
+**Find and replace `api.yourdomain.com` with your actual domain** in the file:
 
-```bash
-cp env.production.example .env.production
-nano .env.production
+```nginx
+# Find this line:
+server_name api.yourdomain.com;
+
+# Replace with your actual domain, e.g.:
+server_name api.mysite.com;
 ```
 
-**Important Variables:**
-- `CONVEX_CLOUD_ORIGIN`: Your public API URL (e.g., `https://api.yourdomain.com`)
-- `DATABASE_URL`: Supabase PostgreSQL connection string
-- `AWS_S3_ENDPOINT`: Supabase S3 endpoint
-- `AWS_ACCESS_KEY_ID` & `AWS_SECRET_ACCESS_KEY`: Supabase S3 credentials
-- `AWS_S3_BUCKET`: Your bucket name
-- `ACTION_WORKER_COUNT`: Number of action workers 
-  - t2.micro: Use 1-2 workers
-  - t3.micro: Use 2-4 workers
-  - t3.small+: Use 4-8 workers
+**IMPORTANT:** The nginx.conf file is configured to work WITHOUT SSL certificates initially. After you set up SSL with certbot (Step 5.3), certbot will automatically update the configuration to add HTTPS support.
 
-## Phase 4: Nginx Configuration
+**After editing, SAVE the file:**
+- In nano: Press `Ctrl + O`, then `Enter`, then `Ctrl + X`
+- In vim: Press `Esc`, type `:wq`, then `Enter`
 
-### 1. Copy Nginx Configuration
+### Step 5.2: Copy Nginx Configuration to System
+
+**For Ubuntu (uses systemd and /etc/nginx structure):**
 
 ```bash
-sudo chmod +x scripts/setup-nginx.sh
-sudo ./scripts/setup-nginx.sh api.yourdomain.com
-```
+# Copy nginx config to system directory (Ubuntu standard location)
+sudo cp /opt/convex/nginx/nginx.conf /etc/nginx/sites-available/convex
 
-Or manually:
-
-```bash
-sudo cp nginx/nginx.conf /etc/nginx/sites-available/convex
+# Create symbolic link to enable the site (Ubuntu standard)
 sudo ln -s /etc/nginx/sites-available/convex /etc/nginx/sites-enabled/
-sudo rm /etc/nginx/sites-enabled/default  # Remove default site
-sudo nginx -t  # Test configuration
+
+# Remove default nginx site (if it exists)
+sudo rm /etc/nginx/sites-enabled/default
+
+# Test nginx configuration
+sudo nginx -t
+# Should show: "syntax is ok" and "test is successful"
+
+# Reload nginx (Ubuntu uses systemd)
+sudo systemctl reload nginx
+
+# OR restart nginx service
+sudo systemctl restart nginx
+
+# Check nginx status (Ubuntu)
+sudo systemctl status nginx
+```
+
+### Step 5.3: Set Up SSL Certificate (Let's Encrypt)
+
+**IMPORTANT:** 
+1. Your domain DNS must point to your EC2 instance IP before running this
+2. Nginx must be running and accessible on port 80
+3. The nginx.conf should work without SSL first (which it does)
+
+**For Ubuntu:**
+
+```bash
+# Update package list (Ubuntu)
+sudo apt update
+
+# Install certbot if not already installed (Ubuntu)
+sudo apt install -y certbot python3-certbot-nginx
+
+# Get SSL certificate (replace with your actual domain)
+sudo certbot --nginx -d api.yourdomain.com
+
+# Follow the prompts:
+# - Enter your email
+# - Agree to terms
+# - Choose whether to redirect HTTP to HTTPS (recommended: Yes)
+
+# Certbot will automatically:
+# - Create SSL certificates
+# - Update nginx.conf to add HTTPS server block
+# - Configure automatic redirects
+
+# Verify certificate
+sudo certbot certificates
+
+# Check certbot service status (Ubuntu uses systemd)
+sudo systemctl status certbot.timer
+
+# Test nginx configuration after certbot changes
+sudo nginx -t
+
+# Reload nginx
 sudo systemctl reload nginx
 ```
 
-### 2. SSL Certificate (Let's Encrypt)
+**Note:** If you get an error about missing SSL certificates before running certbot, that's normal. The nginx.conf is set up to work on HTTP (port 80) first, then certbot will add HTTPS (port 443) automatically.
+
+---
+
+## Phase 6: Initial Deployment
+
+### Step 6.1: Verify Everything is Ready
 
 ```bash
-sudo certbot --nginx -d api.yourdomain.com
+# Navigate to /opt/convex/
+cd /opt/convex
+
+# Verify files exist
+ls -la
+# Should see: docker-compose.yml, .env.production, scripts/, nginx/, data/
+
+# Verify .env.production exists and has content
+cat .env.production | grep -v "^#" | grep -v "^$"
+# Should show your environment variables
+
+# Check if Docker is installed
+docker --version
+# Should show Docker version
+
+# Check if Docker service is running
+sudo systemctl status docker
+# Should show "active (running)"
+
+# If Docker is not running, start it:
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Verify docker is running
+docker ps
+# Should show running containers or empty list (both are OK)
+
+# Check Docker Compose
+docker compose version
+# OR (if above doesn't work):
+docker-compose --version
+
+# If Docker Compose is not installed, install it:
+# sudo apt install -y docker-compose-plugin
+# OR
+# sudo apt install -y docker-compose
+
+# Verify you're in docker group
+groups
+# Should include 'docker'
+# If not, run: sudo usermod -aG docker $USER && newgrp docker
 ```
 
-Make sure your domain DNS points to the EC2 instance IP before running certbot.
+### Step 6.2: Install/Check Docker Compose and Pull Docker Images
 
-## Phase 5: GitHub Actions Setup
-
-### 1. Create GitHub Secrets
-
-Go to your repository → **Settings** → **Secrets and variables** → **Actions**
-
-Add these secrets:
-
-- `EC2_HOST`: Your EC2 public IP or domain (e.g., `ec2-xx-xx-xx-xx.compute-1.amazonaws.com`)
-- `EC2_USER`: SSH user (usually `ubuntu`)
-- `EC2_SSH_KEY`: Your private SSH key content
-
-### 2. Generate SSH Key Pair (if needed)
+**First, check if Docker Compose is installed:**
 
 ```bash
-# On your local machine
+# Check Docker Compose version
+docker compose version
+# OR try the older syntax:
+docker-compose --version
+
+# If neither works, install Docker Compose:
+```
+
+**If Docker Compose is NOT installed, install it:**
+
+```bash
+# Option 1: Install Docker Compose plugin (recommended for Ubuntu 22.04)
+sudo apt update
+sudo apt install -y docker-compose-plugin
+
+# Option 2: Install standalone docker-compose (if plugin doesn't work)
+sudo apt install -y docker-compose
+
+# Verify installation
+docker compose version
+# OR
+docker-compose --version
+```
+
+**Then pull Docker images:**
+
+```bash
+# Make sure you're in /opt/convex/
+cd /opt/convex
+
+# Pull latest Docker images (use the command that works)
+docker compose pull
+# OR if above doesn't work:
+docker-compose pull
+
+# This will download:
+# - ghcr.io/get-convex/convex-backend:latest
+# - ghcr.io/get-convex/convex-dashboard:latest
+```
+
+### Step 6.3: Start Services
+
+```bash
+# Make sure you're in /opt/convex/
+cd /opt/convex
+
+# Start all services (use the command that works for you)
+docker compose up -d
+# OR if above doesn't work:
+docker-compose up -d
+
+# The -d flag runs in detached mode (background)
+
+# Check if containers are running
+docker compose ps
+# OR
+docker-compose ps
+
+# Should show:
+# - convex-backend (running)
+# - convex-dashboard (running)
+```
+
+### Step 6.4: Check Logs and Troubleshoot
+
+```bash
+# View backend logs
+docker compose logs backend
+
+# View dashboard logs
+docker compose logs dashboard
+
+# Follow logs in real-time
+docker compose logs -f backend
+
+# Check container status
+docker compose ps
+# Should show all containers as "Up" and "healthy"
+
+# If you see errors, check:
+# 1. .env.production file is correct
+# 2. Database connection is working
+# 3. S3 credentials are correct
+# 4. CONVEX_CLOUD_ORIGIN is set in .env.production
+```
+
+### Step 6.4a: Fix "CONVEX_CLOUD_ORIGIN variable is not set" Error
+
+**This means the environment variable is missing from .env.production:**
+
+```bash
+# Navigate to /opt/convex/
+cd /opt/convex
+
+# Check if .env.production exists
+ls -la .env.production
+
+# View the file and check for CONVEX_CLOUD_ORIGIN
+cat .env.production | grep CONVEX_CLOUD_ORIGIN
+
+# If it's missing or empty, edit the file:
+nano .env.production
+
+# Make sure you have this line (replace with your actual domain):
+CONVEX_CLOUD_ORIGIN=https://sync.koanpay.com
+CONVEX_SITE_URL=https://sync.koanpay.com
+CONVEX_SITE_ORIGIN=https://sync.koanpay.com
+
+# SAVE: Ctrl+O, Enter, Ctrl+X
+
+# Verify the variable is set
+grep CONVEX_CLOUD_ORIGIN .env.production
+# Should show: CONVEX_CLOUD_ORIGIN=https://sync.koanpay.com
+
+# Restart containers
+docker compose down
+docker compose up -d
+```
+
+### Step 6.4b: Fix "Dashboard container is unhealthy" Error
+
+**This usually means the backend isn't ready yet or there's a configuration issue:**
+
+```bash
+# Step 1: Check backend status first
+docker compose ps
+# Backend should show "healthy" status before dashboard can start
+
+# Step 2: Check backend logs for errors
+docker compose logs backend | tail -50
+
+# Step 3: Test backend health endpoint
+curl http://localhost:3210/health
+# Should return success (200 OK)
+
+# Step 4: If backend is not healthy, check for common issues:
+# - Database connection errors
+# - Missing environment variables
+# - Port conflicts
+
+# Step 5: Check dashboard logs
+docker compose logs dashboard | tail -50
+
+# Step 6: Common fixes:
+
+# Fix 1: Restart everything and wait
+docker compose down
+docker compose up -d
+
+# Wait for backend to become healthy (30-60 seconds)
+echo "Waiting for backend to be healthy..."
+sleep 45
+docker compose ps
+
+# Fix 2: If backend is healthy but dashboard isn't, check dashboard logs
+docker compose logs dashboard
+
+# Fix 3: Check if .env.production is being read correctly
+docker compose config | grep CONVEX_CLOUD_ORIGIN
+# Should show your domain
+
+# Fix 4: Verify file permissions
+ls -l /opt/convex/.env.production
+# Should be readable (not permission denied)
+
+# Fix 5: If dashboard keeps failing, try starting backend first, then dashboard
+docker compose up -d backend
+# Wait for backend to be healthy
+sleep 30
+docker compose ps backend
+# Should show "healthy"
+# Then start dashboard
+docker compose up -d dashboard
+```
+
+### Step 6.5: Generate Admin Key
+
+```bash
+# Generate admin key (first time only)
+docker compose exec backend ./generate_admin_key.sh
+
+# Save the output! It will look like:
+# instance|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Save it to a file
+docker compose exec backend ./generate_admin_key.sh > /opt/convex/admin_key.txt
+
+# View the admin key
+cat /opt/convex/admin_key.txt
+
+# IMPORTANT: Save this key securely! You'll need it for:
+# - Convex CLI authentication
+# - Dashboard access
+```
+
+---
+
+## Phase 7: Verify Deployment
+
+### Step 7.1: Check Service Health
+
+```bash
+# Check container status
+cd /opt/convex
+docker compose ps
+
+# All services should show "Up" status
+
+# Check resource usage
+docker stats
+
+# For t2.micro, monitor memory usage closely
+```
+
+### Step 7.2: Test API Endpoints
+
+```bash
+# Test backend health endpoint
+curl http://localhost:3210/health
+
+# Test from outside (replace with your domain)
+curl https://api.yourdomain.com/health
+
+# Test dashboard (replace with your domain)
+curl https://api.yourdomain.com/dashboard/
+```
+
+### Step 7.3: Access Dashboard
+
+Open in your browser:
+- **Dashboard**: `https://api.yourdomain.com/dashboard/`
+- **API**: `https://api.yourdomain.com/`
+- **HTTP Actions**: `https://api.yourdomain.com/actions/`
+
+---
+
+## Phase 8: GitHub Actions Setup (Optional - For CI/CD)
+
+### Step 8.1: Generate SSH Key for GitHub Actions
+
+```bash
+# On your LOCAL machine (not EC2)
 ssh-keygen -t ed25519 -C "github-actions" -f ~/.ssh/ec2_deploy_key
 
 # Copy public key to EC2
 ssh-copy-id -i ~/.ssh/ec2_deploy_key.pub ubuntu@YOUR_EC2_IP
 
-# Add private key to GitHub Secrets
+# View private key to add to GitHub
 cat ~/.ssh/ec2_deploy_key
+# Copy the entire output
 ```
 
-### 3. Workflow File
+### Step 8.2: Add GitHub Secrets
 
-The workflow file (`.github/workflows/deploy.yml`) is already configured. It will:
-- Deploy on push to `main` or `production` branch
-- Pull latest Docker images
-- Restart containers
-- Verify deployment
+1. Go to your GitHub repository
+2. Click **Settings** → **Secrets and variables** → **Actions**
+3. Click **New repository secret**
+4. Add these secrets:
 
-## Phase 6: Initial Deployment
+   - **Name**: `EC2_HOST`
+     - **Value**: Your EC2 public IP or domain (e.g., `ec2-xx-xx-xx-xx.compute-1.amazonaws.com`)
 
-### Manual Deployment (First Time)
+   - **Name**: `EC2_USER`
+     - **Value**: `ubuntu` (or your EC2 username)
+
+   - **Name**: `EC2_SSH_KEY`
+     - **Value**: The entire content of `~/.ssh/ec2_deploy_key` (the private key)
+
+### Step 8.3: Push to Trigger Deployment
 
 ```bash
+# On your local machine, in your repository
+git add .
+git commit -m "Initial deployment setup"
+git push origin main
+
+# GitHub Actions will automatically:
+# - Copy docker-compose.yml to /opt/convex/
+# - Pull latest images
+# - Restart containers
+```
+
+---
+
+## Directory Structure Reference
+
+### On Your EC2 Instance:
+
+```
+/home/ubuntu/
+ └── convex-backend/              # Your cloned repository (source files)
+     ├── docker-compose.yml
+     ├── env.production.example
+     ├── scripts/
+     ├── nginx/
+     └── .github/
+     # ⚠️ DO NOT create .env.production here!
+
+/opt/convex/                      # DEPLOYMENT DIRECTORY (where everything runs)
+ ├── docker-compose.yml           # ← Copied from /home/ubuntu/convex-backend/
+ ├── .env.production              # ← YOU CREATE THIS FILE HERE (not in repository!)
+ ├── env.production.example       # ← Copied from /home/ubuntu/convex-backend/
+ ├── admin_key.txt                # ← Generated after first run
+ ├── scripts/                     # ← Copied from /home/ubuntu/convex-backend/
+ │   ├── setup-ec2.sh
+ │   ├── generate-env.sh
+ │   ├── setup-nginx.sh
+ │   └── setup-t2-micro.sh
+ ├── nginx/                       # ← Copied from /home/ubuntu/convex-backend/
+ │   └── nginx.conf
+ └── data/                        # ← Created automatically
+     └── (Docker volumes stored here)
+```
+
+**IMPORTANT:** 
+- **Repository location:** `/home/ubuntu/convex-backend/` (where you cloned - source files)
+- **Deployment location:** `/opt/convex/` (where everything runs - you need to CREATE this!)
+- **The `.env.production` file MUST be in `/opt/convex/` directory, NOT in the repository**
+
+**If `/opt/convex/` doesn't exist, you need to:**
+1. Create it: `sudo mkdir -p /opt/convex`
+2. Copy files from repository: `cp -r /home/ubuntu/convex-backend/* /opt/convex/` (selectively)
+3. Then create `.env.production` in `/opt/convex/`
+
+---
+
+## Common Commands Reference (Ubuntu)
+
+```bash
+# Navigate to deployment directory
 cd /opt/convex
 
-# Pull images
-docker compose pull
+# View running containers
+docker compose ps
+
+# View logs
+docker compose logs -f backend
+docker compose logs -f dashboard
+
+# Restart services
+docker compose restart
+
+# Stop services
+docker compose down
 
 # Start services
 docker compose up -d
 
-# Generate admin key
-docker compose exec backend ./generate_admin_key.sh
-
-# Save admin key
-docker compose exec backend ./generate_admin_key.sh > admin_key.txt
-cat admin_key.txt
-```
-
-### Via GitHub Actions
-
-1. Push code to `main` branch
-2. GitHub Actions will automatically deploy
-3. Check Actions tab for deployment status
-
-## Phase 7: Post-Deployment
-
-### 1. Get Admin Key
-
-```bash
-cd /opt/convex
-docker compose exec backend ./generate_admin_key.sh
-```
-
-Save this key securely. You'll need it for:
-- Convex CLI authentication
-- Dashboard access
-
-### 2. Configure Convex CLI
-
-```bash
-# Install Convex CLI
-npm install -g convex
-
-# Set self-hosted URL
-export CONVEX_SELF_HOSTED_URL='https://api.yourdomain.com'
-export CONVEX_SELF_HOSTED_ADMIN_KEY='instance|your-admin-key-here'
-
-# Or add to ~/.bashrc or ~/.zshrc
-echo 'export CONVEX_SELF_HOSTED_URL="https://api.yourdomain.com"' >> ~/.bashrc
-echo 'export CONVEX_SELF_HOSTED_ADMIN_KEY="instance|your-admin-key-here"' >> ~/.bashrc
-```
-
-### 3. Access Dashboard
-
-- Dashboard: `https://api.yourdomain.com/dashboard/`
-- API: `https://api.yourdomain.com/`
-- HTTP Actions: `https://api.yourdomain.com/actions/`
-
-## Monitoring & Maintenance
-
-### Check Service Status
-
-```bash
-cd /opt/convex
-docker compose ps
-docker compose logs -f backend
-```
-
-### Update Deployment
-
-Simply push to `main` branch - GitHub Actions will handle the rest.
-
-### Manual Update
-
-```bash
-cd /opt/convex
+# Update and restart
 docker compose pull
 docker compose up -d
-docker image prune -f  # Clean up old images
+
+# Check environment variables
+cat .env.production
+
+# Check nginx status (Ubuntu systemd)
+sudo systemctl status nginx
+sudo nginx -t
+sudo systemctl reload nginx
+sudo systemctl restart nginx
+
+# Check disk space (Ubuntu)
+df -h
+
+# Check memory usage (Ubuntu)
+free -h
+
+# Check Docker resource usage
+docker stats
+
+# Check Ubuntu system info
+lsb_release -a
+uname -a
+
+# Check running services (Ubuntu)
+sudo systemctl list-units --type=service --state=running
+
+# Check Docker service (Ubuntu)
+sudo systemctl status docker
 ```
 
-### Backup
-
-Since data is stored in Supabase:
-- **Database**: Supabase handles backups automatically
-- **Files**: Stored in Supabase Storage (S3)
-- **Local data**: Only temporary/cache data in `/opt/convex/data`
+---
 
 ## Troubleshooting
 
-### Services Not Starting
+### Problem: "Cannot access scripts/generate-env.sh"
+
+**Solution:** You're in the wrong directory. The scripts are in `/opt/convex/scripts/`:
 
 ```bash
-# Check logs
+# Make sure you're in /opt/convex/ (not /home/ubuntu/convex-backend/)
+cd /opt/convex
+
+# Verify you're in the right place
+pwd
+# Should show: /opt/convex
+
+# Check if scripts exist
+ls -la scripts/
+# Should show: generate-env.sh, setup-ec2.sh, etc.
+
+# If scripts don't exist, copy them from repository:
+# cp -r /home/ubuntu/convex-backend/scripts/* /opt/convex/scripts/
+# chmod +x /opt/convex/scripts/*.sh
+
+# Then run the script
+./scripts/generate-env.sh
+```
+
+### Problem: "/opt/convex/ directory doesn't exist"
+
+**Solution:** You need to create it and copy files:
+
+```bash
+# Create the directory
+sudo mkdir -p /opt/convex
+sudo mkdir -p /opt/convex/scripts
+sudo mkdir -p /opt/convex/data
+sudo mkdir -p /opt/convex/nginx
+
+# Change ownership
+sudo chown -R $USER:$USER /opt/convex
+
+# Copy files from your repository
+cd /home/ubuntu/convex-backend
+cp docker-compose.yml /opt/convex/
+cp env.production.example /opt/convex/
+cp -r scripts/* /opt/convex/scripts/
+cp -r nginx/* /opt/convex/nginx/
+chmod +x /opt/convex/scripts/*.sh
+
+# Verify
+ls -la /opt/convex/
+```
+
+### Problem: ".env.production not found"
+
+**Solution:** Create it in `/opt/convex/` directory:
+
+```bash
+cd /opt/convex
+cp env.production.example .env.production
+nano .env.production
+```
+
+### Problem: "Permission denied" when running docker commands
+
+**Solution (Ubuntu):** Add yourself to docker group:
+
+```bash
+# Add your user to docker group (Ubuntu)
+sudo usermod -aG docker $USER
+
+# Apply changes immediately
+newgrp docker
+
+# OR logout and login again via SSH
+# Verify you're in docker group
+groups
+# Should show 'docker' in the list
+```
+
+### Problem: "docker compose: unknown command" or "docker-compose: command not found"
+
+**Solution:** Install Docker Compose:
+
+```bash
+# Check if Docker is installed first
+docker --version
+# If not installed, run: sudo apt install -y docker.io
+
+# Check Docker service
+sudo systemctl status docker
+# If not running, start it: sudo systemctl start docker
+
+# Install Docker Compose plugin (Ubuntu 22.04)
+sudo apt update
+sudo apt install -y docker-compose-plugin
+
+# Verify installation
+docker compose version
+
+# If plugin doesn't work, install standalone version:
+sudo apt install -y docker-compose
+docker-compose --version
+
+# Use whichever command works:
+# docker compose (newer, plugin version)
+# OR
+# docker-compose (older, standalone version)
+```
+
+### Problem: Containers won't start
+
+**Solution:** Check logs and environment:
+
+```bash
+cd /opt/convex
 docker compose logs backend
-docker compose logs dashboard
-
-# Check environment
 docker compose config
-
-# Verify .env.production
 cat .env.production
 ```
 
-### Database Connection Issues
+### Problem: Database connection fails
 
-- Verify `DATABASE_URL` in `.env.production`
-- Check Supabase connection settings
-- Ensure IP is whitelisted in Supabase (if required)
+**Solution:** 
+1. Verify `DATABASE_URL` in `/opt/convex/.env.production`
+2. Check Supabase connection string format
+3. Ensure EC2 IP is whitelisted in Supabase (if required)
 
-### S3 Storage Issues
+### Problem: Out of memory (t2.micro)
 
-- Verify Supabase Storage S3 API is enabled
-- Check bucket permissions
-- Verify credentials in `.env.production`
-
-### Nginx Issues
+**Solution (Ubuntu):** Enable swap space:
 
 ```bash
-# Test configuration
-sudo nginx -t
+# Create 2GB swap file (Ubuntu)
+sudo fallocate -l 2G /swapfile
 
-# Check logs
-sudo tail -f /var/log/nginx/error.log
+# Set correct permissions
+sudo chmod 600 /swapfile
 
-# Restart nginx
-sudo systemctl restart nginx
+# Format as swap
+sudo mkswap /swapfile
+
+# Enable swap
+sudo swapon /swapfile
+
+# Make it permanent (add to /etc/fstab)
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# Verify swap is active (Ubuntu)
+free -h
+# Should show swap with ~2GB
+
+# Check swap status
+swapon --show
 ```
 
-### SSL Certificate Issues
+---
 
-```bash
-# Renew certificate
-sudo certbot renew
+## Next Steps After Deployment
 
-# Check certificate status
-sudo certbot certificates
-```
+1. ✅ Save your admin key securely
+2. ✅ Test API endpoints
+3. ✅ Access dashboard
+4. ✅ Configure Convex CLI on your local machine
+5. ✅ Set up GitHub Actions for automated deployments
 
-## Security Best Practices
-
-1. **Never commit `.env.production`** - It's in `.gitignore`
-2. **Use strong secrets** - Generate random strings for `CONVEX_INSTANCE_SECRET` and `JWT_SIGNING_KEY`
-3. **Restrict SSH access** - Use key-based authentication only
-4. **Keep system updated** - Run `sudo apt update && sudo apt upgrade` regularly
-5. **Monitor logs** - Check Docker and Nginx logs regularly
-6. **Use security groups** - Restrict EC2 ports to necessary only
-
-## File Structure
-
-```
-convex-backend/
-├── .github/
-│   └── workflows/
-│       └── deploy.yml          # GitHub Actions CI/CD
-├── nginx/
-│   └── nginx.conf              # Nginx reverse proxy config
-├── scripts/
-│   ├── setup-ec2.sh            # EC2 initial setup
-│   ├── generate-env.sh         # Environment file generator
-│   └── setup-nginx.sh          # Nginx configuration
-├── docker-compose.yml          # Docker Compose configuration
-├── .env.production.template    # Environment variables template
-└── README.md                   # This file
-```
-
-## References
-
-- [Convex Self-Hosted Documentation](https://github.com/get-convex/convex-backend/blob/main/self-hosted/README.md)
-- [Supabase Documentation](https://supabase.com/docs)
-- [Docker Compose Documentation](https://docs.docker.com/compose/)
+---
 
 ## Support
 
-For issues related to:
-- **Convex Backend**: [Convex GitHub Issues](https://github.com/get-convex/convex-backend/issues)
-- **This Setup**: Open an issue in this repository
+For issues:
+- Check logs: `docker compose logs -f`
+- Verify environment: `cat /opt/convex/.env.production`
+- Check container status: `docker compose ps`
+- Review this guide step-by-step

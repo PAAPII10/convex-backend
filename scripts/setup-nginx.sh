@@ -1,24 +1,37 @@
 #!/bin/bash
 set -e
 
-echo "=== Nginx Configuration Setup ==="
+echo "=== Nginx Configuration Setup (Ubuntu) ==="
 
 DOMAIN=${1:-"api.yourdomain.com"}
 NGINX_CONF="/etc/nginx/sites-available/convex"
 NGINX_ENABLED="/etc/nginx/sites-enabled/convex"
+NGINX_SOURCE="/opt/convex/nginx/nginx.conf"
 
 if [ "$EUID" -ne 0 ]; then 
-    echo "Please run with sudo"
+    echo "❌ Error: Please run with sudo"
+    echo "Usage: sudo ./setup-nginx.sh api.yourdomain.com"
     exit 1
 fi
 
-# Copy nginx configuration
-if [ -f "./nginx/nginx.conf" ]; then
+# Check if nginx.conf exists in /opt/convex/nginx/
+if [ -f "$NGINX_SOURCE" ]; then
+    echo "Found nginx.conf in /opt/convex/nginx/"
+    cp "$NGINX_SOURCE" "$NGINX_CONF"
+    # Replace placeholder domain
+    sed -i "s/api.yourdomain.com/${DOMAIN}/g" "$NGINX_CONF"
+elif [ -f "./nginx/nginx.conf" ]; then
+    echo "Found nginx.conf in current directory"
     cp ./nginx/nginx.conf "$NGINX_CONF"
     # Replace placeholder domain
     sed -i "s/api.yourdomain.com/${DOMAIN}/g" "$NGINX_CONF"
 else
-    echo "Error: nginx.conf not found in ./nginx/"
+    echo "❌ Error: nginx.conf not found!"
+    echo "Expected locations:"
+    echo "  - /opt/convex/nginx/nginx.conf"
+    echo "  - ./nginx/nginx.conf (current directory)"
+    echo ""
+    echo "Make sure you've copied nginx files to /opt/convex/nginx/"
     exit 1
 fi
 
